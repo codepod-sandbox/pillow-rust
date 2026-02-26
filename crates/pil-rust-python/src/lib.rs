@@ -309,6 +309,44 @@ pub mod _pil_native {
         .map_err(|e| vm.new_value_error(e))
     }
 
+    #[pyfunction]
+    fn draw_ellipse(
+        handle_id: usize,
+        xy: Vec<i32>,
+        color: PyObjectRef,
+        fill: bool,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        if xy.len() < 4 {
+            return Err(vm.new_value_error("ellipse xy must have 4 values".to_string()));
+        }
+        let c = extract_color_rgba(&color, vm)?;
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_ellipse(h, xy[0], xy[1], xy[2], xy[3], c, fill)
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn draw_text(
+        handle_id: usize,
+        x: i32,
+        y: i32,
+        text: String,
+        color: PyObjectRef,
+        size: vm::function::OptionalArg<u8>,
+        anchor: vm::function::OptionalArg<String>,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        let c = extract_color_rgba(&color, vm)?;
+        let sz = size.into_option().unwrap_or(1);
+        let anch = anchor.into_option().unwrap_or_else(|| "left".to_string());
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_text(h, x, y, &text, sz, c, &anch)
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
     // -- Helpers -----------------------------------------------------------
 
     /// Extract a color from a Python object (int, tuple, or list) into bytes.

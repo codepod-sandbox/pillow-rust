@@ -68,7 +68,9 @@ class Image:
 
     def resize(self, size, resample=None, **_kw):
         """Return a resized copy."""
-        return Image(_pil_native.image_resize(self._handle, size[0], size[1], resample))
+        if resample is not None:
+            return Image(_pil_native.image_resize(self._handle, size[0], size[1], resample))
+        return Image(_pil_native.image_resize(self._handle, size[0], size[1]))
 
     def crop(self, box=None):
         """Return a cropped copy. *box* is (left, upper, right, lower)."""

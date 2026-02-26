@@ -826,6 +826,83 @@ def test_draw_multiple():
     assert im.getpixel((40, 40)) == (0, 0, 0)
 
 
+def test_draw_ellipse_fill():
+    im = Image.new("RGB", (W, H))
+    draw = ImageDraw.Draw(im)
+    draw.ellipse([(20, 20), (80, 80)], fill=(255, 0, 0))
+    # Centre of ellipse should be red
+    assert im.getpixel((50, 50)) == (255, 0, 0)
+    # Corner should be black (outside ellipse)
+    assert im.getpixel((0, 0)) == (0, 0, 0)
+
+def test_draw_ellipse_outline():
+    im = Image.new("RGB", (W, H))
+    draw = ImageDraw.Draw(im)
+    draw.ellipse([(20, 20), (80, 80)], outline=(0, 255, 0))
+    # Centre should remain black (outline only)
+    assert im.getpixel((50, 50)) == (0, 0, 0)
+    # Top of ellipse should be green (around y=20, x=50)
+    assert im.getpixel((50, 20)) == (0, 255, 0)
+
+def test_draw_text_basic():
+    im = Image.new("RGB", (W, H))
+    draw = ImageDraw.Draw(im)
+    draw.text((10, 10), "Hi", fill=(255, 255, 0))
+    # Some pixel in the text region should be yellow
+    found = False
+    for y in range(10, 26):
+        for x in range(10, 30):
+            if im.getpixel((x, y)) == (255, 255, 0):
+                found = True
+                break
+        if found:
+            break
+    assert found, "text pixels not found"
+
+def test_draw_text_center_anchor():
+    im = Image.new("RGB", (200, 50))
+    draw = ImageDraw.Draw(im)
+    draw.text((100, 10), "AB", fill=(255, 0, 0), anchor="center")
+    # Text centred at x=100: 2 chars × 8px = 16px wide, so from 92 to 108
+    found = False
+    for x in range(90, 110):
+        if im.getpixel((x, 14)) == (255, 0, 0):
+            found = True
+            break
+    assert found, "centred text pixels not found"
+
+def test_draw_text_right_anchor():
+    im = Image.new("RGB", (200, 50))
+    draw = ImageDraw.Draw(im)
+    draw.text((100, 10), "AB", fill=(0, 255, 0), anchor="right")
+    # Text right-aligned at x=100: 2 chars × 8px = 16px, so from 84 to 100
+    found = False
+    for x in range(82, 100):
+        if im.getpixel((x, 14)) == (0, 255, 0):
+            found = True
+            break
+    assert found, "right-anchored text pixels not found"
+
+def test_draw_text_scaled():
+    im = Image.new("RGB", (200, 100))
+    draw = ImageDraw.Draw(im)
+
+    class FakeFont:
+        size = 20
+
+    draw.text((10, 10), "A", fill=(0, 0, 255), font=FakeFont())
+    # Scaled text (16×32) should have blue pixels in a wider area
+    found = False
+    for y in range(10, 42):
+        for x in range(10, 26):
+            if im.getpixel((x, y)) == (0, 0, 255):
+                found = True
+                break
+        if found:
+            break
+    assert found, "scaled text pixels not found"
+
+
 for _n, _f in list(locals().items()):
     if _n.startswith("test_draw") and callable(_f):
         run(_n, _f)
