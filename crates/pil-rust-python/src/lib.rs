@@ -128,9 +128,8 @@ pub mod _pil_native {
     ) -> PyResult<PyObjectRef> {
         let rgba = with(handle_id, |h| pil_rust_core::getpixel(h, x, y))
             .map_err(|e| vm.new_value_error(e))?;
-        let mode =
-            with(handle_id, |h| pil_rust_core::mode(h).to_string())
-                .map_err(|e| vm.new_value_error(e))?;
+        let mode = with(handle_id, |h| pil_rust_core::mode(h).to_string())
+            .map_err(|e| vm.new_value_error(e))?;
         // Return tuple matching image mode
         let result: PyObjectRef = match mode.as_str() {
             "L" => vm.ctx.new_int(rgba[0] as i32).into(),
@@ -191,9 +190,11 @@ pub mod _pil_native {
         let filter = resample
             .into_option()
             .unwrap_or_else(|| "bilinear".to_string());
-        with(handle_id, |h| pil_rust_core::resize(h, width, height, &filter))
-            .map(alloc)
-            .map_err(|e| vm.new_value_error(e))
+        with(handle_id, |h| {
+            pil_rust_core::resize(h, width, height, &filter)
+        })
+        .map(alloc)
+        .map_err(|e| vm.new_value_error(e))
     }
 
     #[pyfunction]
