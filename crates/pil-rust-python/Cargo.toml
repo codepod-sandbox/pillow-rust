@@ -1,0 +1,9 @@
+[package]
+name = "pil-rust-python"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pil-rust-core = { path = "../pil-rust-core" }
+rustpython-vm = { workspace = true }
+rustpython-derive = { workspace = true }
