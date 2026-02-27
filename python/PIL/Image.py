@@ -109,6 +109,15 @@ class Image:
         """Return raw pixel bytes."""
         return bytes(_pil_native.image_tobytes(self._handle))
 
+    def getdata(self):
+        """Return a flat sequence of pixel values."""
+        raw = self.tobytes()
+        m = self.mode
+        bands = {"L": 1, "LA": 2, "RGB": 3, "RGBA": 4}.get(m, 3)
+        if bands == 1:
+            return list(raw)
+        return [tuple(raw[i:i + bands]) for i in range(0, len(raw), bands)]
+
     # -- copy / close -------------------------------------------------------
 
     def copy(self):
@@ -125,7 +134,10 @@ class Image:
 
     def filter(self, f):
         """Apply *f* (an ImageFilter object) and return a new Image."""
-        return Image(_pil_native.image_filter(self._handle, f.name, getattr(f, "args", None)))
+        args = getattr(f, "args", None)
+        if args is not None:
+            return Image(_pil_native.image_filter(self._handle, f.name, args))
+        return Image(_pil_native.image_filter(self._handle, f.name))
 
     # -- dunder helpers -----------------------------------------------------
 

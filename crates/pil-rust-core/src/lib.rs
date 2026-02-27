@@ -132,7 +132,15 @@ pub fn getpixel(handle: &ImageHandle, x: u32, y: u32) -> [u8; 4] {
 }
 
 pub fn putpixel(handle: &mut ImageHandle, x: u32, y: u32, color: [u8; 4]) {
-    handle.inner.put_pixel(x, y, image::Rgba(color));
+    // For grayscale modes, expand the first channel to all RGB channels
+    // so DynamicImage's internal RGBA→Luma conversion preserves the value.
+    let pixel = match &handle.inner {
+        DynamicImage::ImageLuma8(_) | DynamicImage::ImageLumaA8(_) => {
+            image::Rgba([color[0], color[0], color[0], color[3]])
+        }
+        _ => image::Rgba(color),
+    };
+    handle.inner.put_pixel(x, y, pixel);
 }
 
 // ---------------------------------------------------------------------------
@@ -156,8 +164,9 @@ pub fn rotate(handle: &ImageHandle, degrees: f32) -> ImageHandle {
     let deg = ((degrees % 360.0) + 360.0) % 360.0;
 
     if (deg - 90.0).abs() < 0.5 {
+        // PIL rotate(90) is CCW; image crate rotate270 is CW 270° = CCW 90°
         return ImageHandle {
-            inner: handle.inner.rotate90(),
+            inner: handle.inner.rotate270(),
         };
     }
     if (deg - 180.0).abs() < 0.5 {
@@ -166,8 +175,9 @@ pub fn rotate(handle: &ImageHandle, degrees: f32) -> ImageHandle {
         };
     }
     if (deg - 270.0).abs() < 0.5 {
+        // PIL rotate(270) is CCW 270° = CW 90°
         return ImageHandle {
-            inner: handle.inner.rotate270(),
+            inner: handle.inner.rotate90(),
         };
     }
     if deg < 0.5 || (360.0 - deg) < 0.5 {
@@ -196,6 +206,13 @@ pub fn rotate(handle: &ImageHandle, degrees: f32) -> ImageHandle {
             }
         }
     }
+    // Convert back to original mode to preserve it
+    let out = match &handle.inner {
+        DynamicImage::ImageLuma8(_) => DynamicImage::ImageLuma8(out.to_luma8()),
+        DynamicImage::ImageLumaA8(_) => DynamicImage::ImageLumaA8(out.to_luma_alpha8()),
+        DynamicImage::ImageRgb8(_) => DynamicImage::ImageRgb8(out.to_rgb8()),
+        _ => out,
+    };
     ImageHandle { inner: out }
 }
 
@@ -207,9 +224,11 @@ pub fn transpose(handle: &ImageHandle, method: u8) -> Result<ImageHandle> {
     let out = match method {
         0 => img.fliph(),
         1 => img.flipv(),
-        2 => img.rotate90(),
+        // PIL ROTATE_90 is CCW 90° = image crate CW 270°
+        2 => img.rotate270(),
         3 => img.rotate180(),
-        4 => img.rotate270(),
+        // PIL ROTATE_270 is CCW 270° = image crate CW 90°
+        4 => img.rotate90(),
         5 => {
             // TRANSPOSE = flip along main diagonal (swap x/y then flip)
             let rotated = img.rotate90();
@@ -275,41 +294,43 @@ pub fn filter(handle: &ImageHandle, name: &str, args: &[f32]) -> Result<ImageHan
 
 pub fn draw_rectangle(
     handle: &mut ImageHandle,
-    x0: u32,
-    y0: u32,
-    x1: u32,
-    y1: u32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
     color: [u8; 4],
     fill: bool,
 ) {
     let (w, h) = handle.inner.dimensions();
-    let x1 = x1.min(w.saturating_sub(1));
-    let y1 = y1.min(h.saturating_sub(1));
+    let min_x = x0.max(0) as u32;
+    let min_y = y0.max(0) as u32;
+    let max_x = (x1 as u32).min(w.saturating_sub(1));
+    let max_y = (y1 as u32).min(h.saturating_sub(1));
     let pixel = image::Rgba(color);
 
     if fill {
-        for y in y0..=y1 {
-            for x in x0..=x1 {
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
                 handle.inner.put_pixel(x, y, pixel);
             }
         }
     } else {
         // Top and bottom edges
-        for x in x0..=x1 {
-            if y0 < h {
-                handle.inner.put_pixel(x, y0, pixel);
+        for x in min_x..=max_x {
+            if min_y < h {
+                handle.inner.put_pixel(x, min_y, pixel);
             }
-            if y1 < h {
-                handle.inner.put_pixel(x, y1, pixel);
+            if max_y < h {
+                handle.inner.put_pixel(x, max_y, pixel);
             }
         }
         // Left and right edges
-        for y in y0..=y1 {
-            if x0 < w {
-                handle.inner.put_pixel(x0, y, pixel);
+        for y in min_y..=max_y {
+            if min_x < w {
+                handle.inner.put_pixel(min_x, y, pixel);
             }
-            if x1 < w {
-                handle.inner.put_pixel(x1, y, pixel);
+            if max_x < w {
+                handle.inner.put_pixel(max_x, y, pixel);
             }
         }
     }
@@ -649,7 +670,7 @@ pub fn draw_text(
 
     for (ci, ch) in text.chars().enumerate() {
         let code = ch as u32;
-        if code < 32 || code > 126 {
+        if !(32..=126).contains(&code) {
             continue; // skip non-printable
         }
         let glyph_idx = (code - 32) as usize;

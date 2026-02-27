@@ -104,7 +104,7 @@ pub mod _pil_native {
 
     #[pyfunction]
     fn image_size(handle_id: usize, vm: &VirtualMachine) -> PyResult<(u32, u32)> {
-        with(handle_id, |h| pil_rust_core::size(h)).map_err(|e| vm.new_value_error(e))
+        with(handle_id, pil_rust_core::size).map_err(|e| vm.new_value_error(e))
     }
 
     #[pyfunction]
@@ -114,7 +114,7 @@ pub mod _pil_native {
 
     #[pyfunction]
     fn image_tobytes(handle_id: usize, vm: &VirtualMachine) -> PyResult<Vec<u8>> {
-        with(handle_id, |h| pil_rust_core::tobytes(h)).map_err(|e| vm.new_value_error(e))
+        with(handle_id, pil_rust_core::tobytes).map_err(|e| vm.new_value_error(e))
     }
 
     // -- Pixel access ------------------------------------------------------
@@ -275,7 +275,7 @@ pub mod _pil_native {
     #[pyfunction]
     fn draw_rectangle(
         handle_id: usize,
-        xy: Vec<u32>,
+        xy: Vec<i32>,
         color: PyObjectRef,
         fill: bool,
         vm: &VirtualMachine,
@@ -328,6 +328,7 @@ pub mod _pil_native {
     }
 
     #[pyfunction]
+    #[allow(clippy::too_many_arguments)]
     fn draw_text(
         handle_id: usize,
         x: i32,

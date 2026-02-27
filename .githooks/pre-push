@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "pre-push: building pil-python"
+cargo build -p pil-rust-wasm
+
+echo "pre-push: running pytest"
+target/debug/pil-python -m pytest tests/python/
