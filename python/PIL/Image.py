@@ -192,6 +192,25 @@ class Image:
             return Image(_pil_native.image_resize(self._handle, size[0], size[1], resample))
         return Image(_pil_native.image_resize(self._handle, size[0], size[1]))
 
+    def thumbnail(self, size, resample=None, **_kw):
+        """Modify the image in-place to fit within *size*, preserving aspect ratio.
+
+        Only shrinks — never enlarges.
+        """
+        w, h = self.size
+        max_w, max_h = size
+        if w <= max_w and h <= max_h:
+            return
+        # Scale by the larger ratio to fit within bounds
+        scale = min(max_w / w, max_h / h)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        new_im = self.resize((new_w, new_h), resample=resample)
+        # Replace handle in-place
+        _pil_native.image_close(self._handle)
+        self._handle = new_im._handle
+        new_im._handle = None  # prevent double-close
+
     def crop(self, box=None):
         """Return a cropped copy. *box* is (left, upper, right, lower)."""
         if box is None:
