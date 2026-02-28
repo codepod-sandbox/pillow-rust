@@ -723,6 +723,144 @@ pub fn draw_text(
 }
 
 // ---------------------------------------------------------------------------
+// enhance — pixel-level brightness/contrast/color/sharpness
+// ---------------------------------------------------------------------------
+
+/// Enhance image: `kind` is one of "brightness", "contrast", "color", "sharpness".
+/// `factor`: 0.0 = degenerate, 1.0 = original, >1.0 = enhanced.
+pub fn enhance(handle: &ImageHandle, kind: &str, factor: f32) -> Result<ImageHandle> {
+    match kind {
+        "brightness" => Ok(enhance_brightness(handle, factor)),
+        "contrast" => Ok(enhance_contrast(handle, factor)),
+        "color" => Ok(enhance_color(handle, factor)),
+        "sharpness" => enhance_sharpness(handle, factor),
+        _ => Err(PilError::InvalidOperation(format!(
+            "unknown enhance kind: {kind}"
+        ))),
+    }
+}
+
+fn enhance_brightness(handle: &ImageHandle, factor: f32) -> ImageHandle {
+    let rgba = handle.inner.to_rgba8();
+    let (w, h) = handle.inner.dimensions();
+    let mut out = ImageBuffer::new(w, h);
+    for (x, y, px) in rgba.enumerate_pixels() {
+        let r = (px[0] as f32 * factor).round().clamp(0.0, 255.0) as u8;
+        let g = (px[1] as f32 * factor).round().clamp(0.0, 255.0) as u8;
+        let b = (px[2] as f32 * factor).round().clamp(0.0, 255.0) as u8;
+        out.put_pixel(x, y, image::Rgba([r, g, b, px[3]]));
+    }
+    let dyn_img = DynamicImage::ImageRgba8(out);
+    let converted = match &handle.inner {
+        DynamicImage::ImageLuma8(_) => DynamicImage::ImageLuma8(dyn_img.to_luma8()),
+        DynamicImage::ImageLumaA8(_) => DynamicImage::ImageLumaA8(dyn_img.to_luma_alpha8()),
+        DynamicImage::ImageRgb8(_) => DynamicImage::ImageRgb8(dyn_img.to_rgb8()),
+        _ => dyn_img,
+    };
+    ImageHandle { inner: converted }
+}
+
+fn enhance_contrast(handle: &ImageHandle, factor: f32) -> ImageHandle {
+    let rgba = handle.inner.to_rgba8();
+    let (w, h) = handle.inner.dimensions();
+    let mut sum: f64 = 0.0;
+    let mut count: u64 = 0;
+    for px in rgba.pixels() {
+        let lum = 0.299 * px[0] as f64 + 0.587 * px[1] as f64 + 0.114 * px[2] as f64;
+        sum += lum;
+        count += 1;
+    }
+    let mean = if count > 0 {
+        (sum / count as f64).round() as u8
+    } else {
+        128
+    };
+
+    let mut out = ImageBuffer::new(w, h);
+    for (x, y, px) in rgba.enumerate_pixels() {
+        let r = (mean as f32 + (px[0] as f32 - mean as f32) * factor)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        let g = (mean as f32 + (px[1] as f32 - mean as f32) * factor)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        let b = (mean as f32 + (px[2] as f32 - mean as f32) * factor)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        out.put_pixel(x, y, image::Rgba([r, g, b, px[3]]));
+    }
+    let dyn_img = DynamicImage::ImageRgba8(out);
+    let converted = match &handle.inner {
+        DynamicImage::ImageLuma8(_) => DynamicImage::ImageLuma8(dyn_img.to_luma8()),
+        DynamicImage::ImageLumaA8(_) => DynamicImage::ImageLumaA8(dyn_img.to_luma_alpha8()),
+        DynamicImage::ImageRgb8(_) => DynamicImage::ImageRgb8(dyn_img.to_rgb8()),
+        _ => dyn_img,
+    };
+    ImageHandle { inner: converted }
+}
+
+fn enhance_color(handle: &ImageHandle, factor: f32) -> ImageHandle {
+    let rgba = handle.inner.to_rgba8();
+    let (w, h) = handle.inner.dimensions();
+    let mut out = ImageBuffer::new(w, h);
+    for (x, y, px) in rgba.enumerate_pixels() {
+        let lum = (0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        let r = (lum as f32 + (px[0] as f32 - lum as f32) * factor)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        let g = (lum as f32 + (px[1] as f32 - lum as f32) * factor)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        let b = (lum as f32 + (px[2] as f32 - lum as f32) * factor)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        out.put_pixel(x, y, image::Rgba([r, g, b, px[3]]));
+    }
+    let dyn_img = DynamicImage::ImageRgba8(out);
+    let converted = match &handle.inner {
+        DynamicImage::ImageLuma8(_) => DynamicImage::ImageLuma8(dyn_img.to_luma8()),
+        DynamicImage::ImageLumaA8(_) => DynamicImage::ImageLumaA8(dyn_img.to_luma_alpha8()),
+        DynamicImage::ImageRgb8(_) => DynamicImage::ImageRgb8(dyn_img.to_rgb8()),
+        _ => dyn_img,
+    };
+    ImageHandle { inner: converted }
+}
+
+fn enhance_sharpness(handle: &ImageHandle, factor: f32) -> Result<ImageHandle> {
+    let rgba = handle.inner.to_rgba8();
+    let (w, h) = handle.inner.dimensions();
+    let blurred = handle.inner.blur(1.0).to_rgba8();
+
+    let mut out = ImageBuffer::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let orig = rgba.get_pixel(x, y);
+            let blur = blurred.get_pixel(x, y);
+            let r = (blur[0] as f32 + (orig[0] as f32 - blur[0] as f32) * factor)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            let g = (blur[1] as f32 + (orig[1] as f32 - blur[1] as f32) * factor)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            let b = (blur[2] as f32 + (orig[2] as f32 - blur[2] as f32) * factor)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            out.put_pixel(x, y, image::Rgba([r, g, b, orig[3]]));
+        }
+    }
+    let dyn_img = DynamicImage::ImageRgba8(out);
+    let converted = match &handle.inner {
+        DynamicImage::ImageLuma8(_) => DynamicImage::ImageLuma8(dyn_img.to_luma8()),
+        DynamicImage::ImageLumaA8(_) => DynamicImage::ImageLumaA8(dyn_img.to_luma_alpha8()),
+        DynamicImage::ImageRgb8(_) => DynamicImage::ImageRgb8(dyn_img.to_rgb8()),
+        _ => dyn_img,
+    };
+    Ok(ImageHandle { inner: converted })
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

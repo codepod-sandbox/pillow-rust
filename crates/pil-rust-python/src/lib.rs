@@ -465,6 +465,21 @@ pub mod _pil_native {
             .map_err(|e| vm.new_value_error(e.to_string()))
     }
 
+    // -- enhance ---------------------------------------------------------------
+
+    #[pyfunction]
+    fn image_enhance(
+        handle_id: usize,
+        kind: String,
+        factor: f32,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        let handle_clone = with(handle_id, |h| h.clone()).map_err(|e| vm.new_value_error(e))?;
+        pil_rust_core::enhance(&handle_clone, &kind, factor)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
     // -- Helpers -----------------------------------------------------------
 
     /// Extract a color from a Python object (int, tuple, or list) into bytes.
