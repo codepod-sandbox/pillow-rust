@@ -94,6 +94,27 @@ pub fn save(handle: &ImageHandle, format: &str) -> Result<Vec<u8>> {
     Ok(buf.into_inner())
 }
 
+pub fn save_with_quality(handle: &ImageHandle, format: &str, quality: u8) -> Result<Vec<u8>> {
+    let fmt = parse_format(format)?;
+    let mut buf = Cursor::new(Vec::new());
+    match fmt {
+        ImageFormat::Jpeg => {
+            use image::codecs::jpeg::JpegEncoder;
+            use image::ImageEncoder;
+            let rgb = handle.inner.to_rgb8();
+            let (w, h) = handle.inner.dimensions();
+            let encoder = JpegEncoder::new_with_quality(&mut buf, quality);
+            encoder
+                .write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+                .map_err(PilError::Image)?;
+        }
+        _ => {
+            handle.inner.write_to(&mut buf, fmt)?;
+        }
+    }
+    Ok(buf.into_inner())
+}
+
 // ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------

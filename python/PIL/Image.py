@@ -233,13 +233,17 @@ class Image:
 
     # -- serialisation ------------------------------------------------------
 
-    def save(self, fp, format=None, **_kw):
+    def save(self, fp, format=None, **params):
         """Save the image to *fp* (filename or file-like object)."""
         if format is None and isinstance(fp, str):
             ext = fp.rsplit(".", 1)[-1] if "." in fp else ""
             format = ext.lower() or "png"
         fmt = format or "png"
-        data = _pil_native.image_save(self._handle, fmt)
+        quality = params.get("quality")
+        if quality is not None:
+            data = _pil_native.image_save(self._handle, fmt, int(quality))
+        else:
+            data = _pil_native.image_save(self._handle, fmt)
         if isinstance(fp, str):
             with __builtins__["open"](fp, "wb") if isinstance(__builtins__, dict) else __builtins__.open(fp, "wb") as f:
                 f.write(data)

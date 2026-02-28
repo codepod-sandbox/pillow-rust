@@ -94,10 +94,22 @@ pub mod _pil_native {
     // -- Encode / decode ---------------------------------------------------
 
     #[pyfunction]
-    fn image_save(handle_id: usize, format: String, vm: &VirtualMachine) -> PyResult<Vec<u8>> {
-        with(handle_id, |h| pil_rust_core::save(h, &format))
-            .map_err(|e| vm.new_value_error(e))?
-            .map_err(|e| vm.new_value_error(e.to_string()))
+    fn image_save(
+        handle_id: usize,
+        format: String,
+        quality: vm::function::OptionalArg<u8>,
+        vm: &VirtualMachine,
+    ) -> PyResult<Vec<u8>> {
+        let q = quality.into_option();
+        with(handle_id, |h| {
+            if let Some(q) = q {
+                pil_rust_core::save_with_quality(h, &format, q)
+            } else {
+                pil_rust_core::save(h, &format)
+            }
+        })
+        .map_err(|e| vm.new_value_error(e))?
+        .map_err(|e| vm.new_value_error(e.to_string()))
     }
 
     // -- Properties --------------------------------------------------------
