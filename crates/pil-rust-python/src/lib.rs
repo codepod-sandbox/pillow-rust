@@ -348,6 +348,111 @@ pub mod _pil_native {
         .map_err(|e| vm.new_value_error(e))
     }
 
+    // -- frombytes ---------------------------------------------------------
+
+    #[pyfunction]
+    fn image_frombytes(
+        mode: String,
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        pil_rust_core::frombytes(&mode, width, height, &data)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    // -- split / merge / paste ---------------------------------------------
+
+    #[pyfunction]
+    fn image_split(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        // Clone the handle first, then release the borrow before calling alloc
+        let handle_clone = with(handle_id, |h| h.clone()).map_err(|e| vm.new_value_error(e))?;
+        let channels = pil_rust_core::split(&handle_clone);
+        let ids: Vec<usize> = channels.into_iter().map(alloc).collect();
+        let py_list: Vec<PyObjectRef> = ids
+            .into_iter()
+            .map(|id| vm.ctx.new_int(id as i64).into())
+            .collect();
+        Ok(vm.ctx.new_list(py_list).into())
+    }
+
+    #[pyfunction]
+    fn image_merge(mode: String, channel_ids: PyObjectRef, vm: &VirtualMachine) -> PyResult<usize> {
+        let ids = channel_ids.try_to_value::<Vec<i64>>(vm)?;
+        // Clone channel handles to avoid holding borrow during alloc
+        let clones: Vec<ImageHandle> = IMAGES
+            .with(|m| {
+                let map = m.borrow();
+                ids.iter()
+                    .map(|&id| {
+                        map.get(&(id as usize))
+                            .cloned()
+                            .ok_or_else(|| format!("invalid image handle: {id}"))
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()
+            })
+            .map_err(|e| vm.new_value_error(e))?;
+        let refs: Vec<&ImageHandle> = clones.iter().collect();
+        pil_rust_core::merge(&mode, &refs)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn image_paste(
+        dest_id: usize,
+        src_id: usize,
+        x: i32,
+        y: i32,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        // We need to clone the source to avoid double borrow
+        let src_clone = with(src_id, |h| h.clone()).map_err(|e| vm.new_value_error(e))?;
+        with_mut(dest_id, |dest| {
+            pil_rust_core::paste(dest, &src_clone, x, y);
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
+    // -- getbbox -----------------------------------------------------------
+
+    #[pyfunction]
+    fn image_getbbox(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let result = with(handle_id, pil_rust_core::getbbox).map_err(|e| vm.new_value_error(e))?;
+        match result {
+            Some((x0, y0, x1, y1)) => Ok(vm::builtins::PyTuple::new_ref(
+                vec![
+                    vm.ctx.new_int(x0 as i32).into(),
+                    vm.ctx.new_int(y0 as i32).into(),
+                    vm.ctx.new_int(x1 as i32).into(),
+                    vm.ctx.new_int(y1 as i32).into(),
+                ],
+                &vm.ctx,
+            )
+            .into()),
+            None => Ok(vm.ctx.none()),
+        }
+    }
+
+    // -- putdata -----------------------------------------------------------
+
+    #[pyfunction]
+    fn image_putdata(handle_id: usize, data: Vec<u8>, vm: &VirtualMachine) -> PyResult<()> {
+        with_mut(handle_id, |h| pil_rust_core::putdata(h, &data)).map_err(|e| vm.new_value_error(e))
+    }
+
+    // -- point -------------------------------------------------------------
+
+    #[pyfunction]
+    fn image_point(handle_id: usize, lut: Vec<u8>, vm: &VirtualMachine) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::point(h, &lut))
+            .map_err(|e| vm.new_value_error(e))?
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
     // -- Helpers -----------------------------------------------------------
 
     /// Extract a color from a Python object (int, tuple, or list) into bytes.

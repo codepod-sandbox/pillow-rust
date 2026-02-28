@@ -135,8 +135,10 @@ pub fn putpixel(handle: &mut ImageHandle, x: u32, y: u32, color: [u8; 4]) {
     // For grayscale modes, expand the first channel to all RGB channels
     // so DynamicImage's internal RGBA→Luma conversion preserves the value.
     let pixel = match &handle.inner {
-        DynamicImage::ImageLuma8(_) | DynamicImage::ImageLumaA8(_) => {
-            image::Rgba([color[0], color[0], color[0], color[3]])
+        DynamicImage::ImageLuma8(_) => image::Rgba([color[0], color[0], color[0], 255]),
+        DynamicImage::ImageLumaA8(_) => {
+            // For LA mode, color comes as [L, A, 0, 255] from Python
+            image::Rgba([color[0], color[0], color[0], color[1]])
         }
         _ => image::Rgba(color),
     };
@@ -729,6 +731,407 @@ fn parse_format(format: &str) -> Result<ImageFormat> {
         _ => Err(PilError::UnsupportedFormat(format.to_string())),
     }
 }
+
+// ---------------------------------------------------------------------------
+// frombytes — create image from raw pixel bytes
+// ---------------------------------------------------------------------------
+
+pub fn frombytes(mode: &str, width: u32, height: u32, data: &[u8]) -> Result<ImageHandle> {
+    let img = match mode {
+        "L" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            DynamicImage::ImageLuma8(buf)
+        }
+        "LA" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            DynamicImage::ImageLumaA8(buf)
+        }
+        "RGB" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            DynamicImage::ImageRgb8(buf)
+        }
+        "RGBA" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            DynamicImage::ImageRgba8(buf)
+        }
+        _ => return Err(PilError::UnsupportedMode(mode.to_string())),
+    };
+    Ok(ImageHandle { inner: img })
+}
+
+// ---------------------------------------------------------------------------
+// split — extract individual channels as grayscale images
+// ---------------------------------------------------------------------------
+
+pub fn split(handle: &ImageHandle) -> Vec<ImageHandle> {
+    match &handle.inner {
+        DynamicImage::ImageLuma8(buf) => {
+            vec![ImageHandle {
+                inner: DynamicImage::ImageLuma8(buf.clone()),
+            }]
+        }
+        DynamicImage::ImageLumaA8(buf) => {
+            let (w, h) = buf.dimensions();
+            let mut l_buf = ImageBuffer::new(w, h);
+            let mut a_buf = ImageBuffer::new(w, h);
+            for (x, y, px) in buf.enumerate_pixels() {
+                l_buf.put_pixel(x, y, image::Luma([px[0]]));
+                a_buf.put_pixel(x, y, image::Luma([px[1]]));
+            }
+            vec![
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(l_buf),
+                },
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(a_buf),
+                },
+            ]
+        }
+        DynamicImage::ImageRgb8(buf) => {
+            let (w, h) = buf.dimensions();
+            let mut r_buf = ImageBuffer::new(w, h);
+            let mut g_buf = ImageBuffer::new(w, h);
+            let mut b_buf = ImageBuffer::new(w, h);
+            for (x, y, px) in buf.enumerate_pixels() {
+                r_buf.put_pixel(x, y, image::Luma([px[0]]));
+                g_buf.put_pixel(x, y, image::Luma([px[1]]));
+                b_buf.put_pixel(x, y, image::Luma([px[2]]));
+            }
+            vec![
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(r_buf),
+                },
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(g_buf),
+                },
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(b_buf),
+                },
+            ]
+        }
+        DynamicImage::ImageRgba8(buf) => {
+            let (w, h) = buf.dimensions();
+            let mut r_buf = ImageBuffer::new(w, h);
+            let mut g_buf = ImageBuffer::new(w, h);
+            let mut b_buf = ImageBuffer::new(w, h);
+            let mut a_buf = ImageBuffer::new(w, h);
+            for (x, y, px) in buf.enumerate_pixels() {
+                r_buf.put_pixel(x, y, image::Luma([px[0]]));
+                g_buf.put_pixel(x, y, image::Luma([px[1]]));
+                b_buf.put_pixel(x, y, image::Luma([px[2]]));
+                a_buf.put_pixel(x, y, image::Luma([px[3]]));
+            }
+            vec![
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(r_buf),
+                },
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(g_buf),
+                },
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(b_buf),
+                },
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(a_buf),
+                },
+            ]
+        }
+        _ => {
+            // Fallback: convert to RGBA and split
+            let rgba = handle.inner.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            let mut r_buf = ImageBuffer::new(w, h);
+            let mut g_buf = ImageBuffer::new(w, h);
+            let mut b_buf = ImageBuffer::new(w, h);
+            let mut a_buf = ImageBuffer::new(w, h);
+            for (x, y, px) in rgba.enumerate_pixels() {
+                r_buf.put_pixel(x, y, image::Luma([px[0]]));
+                g_buf.put_pixel(x, y, image::Luma([px[1]]));
+                b_buf.put_pixel(x, y, image::Luma([px[2]]));
+                a_buf.put_pixel(x, y, image::Luma([px[3]]));
+            }
+            vec![
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(r_buf),
+                },
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(g_buf),
+                },
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(b_buf),
+                },
+                ImageHandle {
+                    inner: DynamicImage::ImageLuma8(a_buf),
+                },
+            ]
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// merge — combine grayscale channels into a multi-channel image
+// ---------------------------------------------------------------------------
+
+pub fn merge(target_mode: &str, channels: &[&ImageHandle]) -> Result<ImageHandle> {
+    let (w, h) = channels
+        .first()
+        .map(|c| c.inner.dimensions())
+        .unwrap_or((0, 0));
+
+    let img = match target_mode {
+        "L" => {
+            if channels.len() != 1 {
+                return Err(PilError::InvalidOperation(
+                    "L mode requires 1 channel".into(),
+                ));
+            }
+            DynamicImage::ImageLuma8(channels[0].inner.to_luma8())
+        }
+        "LA" => {
+            if channels.len() != 2 {
+                return Err(PilError::InvalidOperation(
+                    "LA mode requires 2 channels".into(),
+                ));
+            }
+            let l = channels[0].inner.to_luma8();
+            let a = channels[1].inner.to_luma8();
+            let mut buf = ImageBuffer::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    buf.put_pixel(
+                        x,
+                        y,
+                        image::LumaA([l.get_pixel(x, y)[0], a.get_pixel(x, y)[0]]),
+                    );
+                }
+            }
+            DynamicImage::ImageLumaA8(buf)
+        }
+        "RGB" => {
+            if channels.len() != 3 {
+                return Err(PilError::InvalidOperation(
+                    "RGB mode requires 3 channels".into(),
+                ));
+            }
+            let r = channels[0].inner.to_luma8();
+            let g = channels[1].inner.to_luma8();
+            let b = channels[2].inner.to_luma8();
+            let mut buf = ImageBuffer::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    buf.put_pixel(
+                        x,
+                        y,
+                        image::Rgb([
+                            r.get_pixel(x, y)[0],
+                            g.get_pixel(x, y)[0],
+                            b.get_pixel(x, y)[0],
+                        ]),
+                    );
+                }
+            }
+            DynamicImage::ImageRgb8(buf)
+        }
+        "RGBA" => {
+            if channels.len() != 4 {
+                return Err(PilError::InvalidOperation(
+                    "RGBA mode requires 4 channels".into(),
+                ));
+            }
+            let r = channels[0].inner.to_luma8();
+            let g = channels[1].inner.to_luma8();
+            let b = channels[2].inner.to_luma8();
+            let a = channels[3].inner.to_luma8();
+            let mut buf = ImageBuffer::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    buf.put_pixel(
+                        x,
+                        y,
+                        image::Rgba([
+                            r.get_pixel(x, y)[0],
+                            g.get_pixel(x, y)[0],
+                            b.get_pixel(x, y)[0],
+                            a.get_pixel(x, y)[0],
+                        ]),
+                    );
+                }
+            }
+            DynamicImage::ImageRgba8(buf)
+        }
+        _ => return Err(PilError::UnsupportedMode(target_mode.to_string())),
+    };
+    Ok(ImageHandle { inner: img })
+}
+
+// ---------------------------------------------------------------------------
+// paste — paste one image onto another
+// ---------------------------------------------------------------------------
+
+pub fn paste(dest: &mut ImageHandle, src: &ImageHandle, x: i32, y: i32) {
+    let (dw, dh) = dest.inner.dimensions();
+    let (sw, sh) = src.inner.dimensions();
+
+    for sy in 0..sh {
+        for sx in 0..sw {
+            let dx = x + sx as i32;
+            let dy = y + sy as i32;
+            if dx >= 0 && dx < dw as i32 && dy >= 0 && dy < dh as i32 {
+                let pixel = src.inner.get_pixel(sx, sy);
+                dest.inner.put_pixel(dx as u32, dy as u32, pixel);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// getbbox — bounding box of non-zero region
+// ---------------------------------------------------------------------------
+
+pub fn getbbox(handle: &ImageHandle) -> Option<(u32, u32, u32, u32)> {
+    let (w, h) = handle.inner.dimensions();
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut min_x = w;
+    let mut min_y = h;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+
+    // Determine how many channels are meaningful (ignore alpha for non-alpha modes)
+    let check_channels: usize = match &handle.inner {
+        DynamicImage::ImageLuma8(_) => 1,
+        DynamicImage::ImageLumaA8(_) => 1, // only check L, not A
+        DynamicImage::ImageRgb8(_) => 3,
+        DynamicImage::ImageRgba8(_) => 3, // only check RGB, not A
+        _ => 3,
+    };
+
+    for y in 0..h {
+        for x in 0..w {
+            let p = handle.inner.get_pixel(x, y);
+            let is_zero = p.0[..check_channels].iter().all(|&v| v == 0);
+            if !is_zero {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+
+    if min_x > max_x {
+        None
+    } else {
+        Some((min_x, min_y, max_x + 1, max_y + 1))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// putdata — set all pixels from a flat byte slice
+// ---------------------------------------------------------------------------
+
+pub fn putdata(handle: &mut ImageHandle, data: &[u8]) {
+    let (w, h) = handle.inner.dimensions();
+    let bands = match &handle.inner {
+        DynamicImage::ImageLuma8(_) => 1,
+        DynamicImage::ImageLumaA8(_) => 2,
+        DynamicImage::ImageRgb8(_) => 3,
+        DynamicImage::ImageRgba8(_) => 4,
+        _ => 3,
+    };
+    let mut idx = 0usize;
+    for y in 0..h {
+        for x in 0..w {
+            if idx + bands > data.len() {
+                return;
+            }
+            let color = match bands {
+                1 => [data[idx], data[idx], data[idx], 255],
+                2 => [data[idx], data[idx], data[idx], data[idx + 1]],
+                3 => [data[idx], data[idx + 1], data[idx + 2], 255],
+                4 => [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]],
+                _ => [0, 0, 0, 255],
+            };
+            putpixel(handle, x, y, color);
+            idx += bands;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// point — apply a lookup table or function to each pixel
+// ---------------------------------------------------------------------------
+
+pub fn point(handle: &ImageHandle, lut: &[u8]) -> Result<ImageHandle> {
+    let (w, h) = handle.inner.dimensions();
+    match &handle.inner {
+        DynamicImage::ImageLuma8(buf) => {
+            if lut.len() < 256 {
+                return Err(PilError::InvalidOperation("LUT too short".into()));
+            }
+            let mut out = ImageBuffer::new(w, h);
+            for (x, y, px) in buf.enumerate_pixels() {
+                out.put_pixel(x, y, image::Luma([lut[px[0] as usize]]));
+            }
+            Ok(ImageHandle {
+                inner: DynamicImage::ImageLuma8(out),
+            })
+        }
+        DynamicImage::ImageRgb8(buf) => {
+            if lut.len() < 768 {
+                return Err(PilError::InvalidOperation("LUT too short for RGB".into()));
+            }
+            let mut out = ImageBuffer::new(w, h);
+            for (x, y, px) in buf.enumerate_pixels() {
+                out.put_pixel(
+                    x,
+                    y,
+                    image::Rgb([
+                        lut[px[0] as usize],
+                        lut[256 + px[1] as usize],
+                        lut[512 + px[2] as usize],
+                    ]),
+                );
+            }
+            Ok(ImageHandle {
+                inner: DynamicImage::ImageRgb8(out),
+            })
+        }
+        DynamicImage::ImageRgba8(buf) => {
+            if lut.len() < 1024 {
+                return Err(PilError::InvalidOperation("LUT too short for RGBA".into()));
+            }
+            let mut out = ImageBuffer::new(w, h);
+            for (x, y, px) in buf.enumerate_pixels() {
+                out.put_pixel(
+                    x,
+                    y,
+                    image::Rgba([
+                        lut[px[0] as usize],
+                        lut[256 + px[1] as usize],
+                        lut[512 + px[2] as usize],
+                        lut[768 + px[3] as usize],
+                    ]),
+                );
+            }
+            Ok(ImageHandle {
+                inner: DynamicImage::ImageRgba8(out),
+            })
+        }
+        _ => Err(PilError::InvalidOperation(
+            "point() not supported for this mode".into(),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn parse_filter(filter: &str) -> image::imageops::FilterType {
     match filter.to_ascii_lowercase().as_str() {
