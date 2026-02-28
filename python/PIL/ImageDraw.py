@@ -49,6 +49,31 @@ class ImageDraw:
         _pil_native.draw_line(self._image._handle, list(coords), list(color), width)
 
 
+    def polygon(self, xy, fill=None, outline=None, width=1):
+        """Draw a polygon.
+
+        *xy* is either ``[(x0, y0), (x1, y1), ...]`` or ``[x0, y0, x1, y1, ...]``.
+        """
+        coords = _normalise_xy(xy)
+        if fill is not None:
+            color = fill
+            if isinstance(color, int):
+                color = (color, color, color)
+            _pil_native.draw_polygon(
+                self._image._handle, list(coords), list(color), True
+            )
+        if outline is not None:
+            color = outline
+            if isinstance(color, int):
+                color = (color, color, color)
+            _pil_native.draw_polygon(
+                self._image._handle, list(coords), list(color), False
+            )
+        if fill is None and outline is None:
+            _pil_native.draw_polygon(
+                self._image._handle, list(coords), [255, 255, 255], False
+            )
+
     def text(self, xy, text, fill=None, font=None, anchor=None):
         """Draw text at the given position.
 

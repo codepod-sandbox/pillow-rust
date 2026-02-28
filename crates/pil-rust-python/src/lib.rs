@@ -360,6 +360,19 @@ pub mod _pil_native {
         .map_err(|e| vm.new_value_error(e))
     }
 
+    #[pyfunction]
+    fn draw_polygon(
+        handle_id: usize,
+        xy: Vec<i32>,
+        color: PyObjectRef,
+        fill: bool,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        let c = extract_color_rgba(&color, vm)?;
+        with_mut(handle_id, |h| pil_rust_core::draw_polygon(h, &xy, c, fill))
+            .map_err(|e| vm.new_value_error(e))
+    }
+
     // -- frombytes ---------------------------------------------------------
 
     #[pyfunction]

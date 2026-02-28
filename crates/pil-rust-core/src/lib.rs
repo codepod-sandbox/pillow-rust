@@ -467,6 +467,77 @@ pub fn draw_ellipse(
     }
 }
 
+/// Draw a filled or outlined polygon.
+///
+/// `points` is a flat list of (x, y) pairs: [x0, y0, x1, y1, ...].
+/// Uses scanline fill for filled polygons, Bresenham lines for outline.
+pub fn draw_polygon(handle: &mut ImageHandle, points: &[i32], color: [u8; 4], fill: bool) {
+    let n = points.len() / 2;
+    if n < 3 {
+        return;
+    }
+
+    let (w, h) = handle.inner.dimensions();
+
+    if fill {
+        let pixel = image::Rgba(color);
+        // Find bounding box
+        let mut min_y = i32::MAX;
+        let mut max_y = i32::MIN;
+        for i in 0..n {
+            let y = points[i * 2 + 1];
+            if y < min_y {
+                min_y = y;
+            }
+            if y > max_y {
+                max_y = y;
+            }
+        }
+        min_y = min_y.max(0);
+        max_y = max_y.min(h as i32 - 1);
+
+        // Scanline fill
+        for y in min_y..=max_y {
+            let mut intersections = Vec::new();
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let y0 = points[i * 2 + 1];
+                let y1 = points[j * 2 + 1];
+                if (y0 <= y && y1 > y) || (y1 <= y && y0 > y) {
+                    let x0 = points[i * 2] as f64;
+                    let x1 = points[j * 2] as f64;
+                    let t = (y as f64 - y0 as f64) / (y1 as f64 - y0 as f64);
+                    let x = (x0 + t * (x1 - x0)).round() as i32;
+                    intersections.push(x);
+                }
+            }
+            intersections.sort();
+            // Fill between pairs of intersections
+            let mut i = 0;
+            while i + 1 < intersections.len() {
+                let x_start = intersections[i].max(0);
+                let x_end = intersections[i + 1].min(w as i32 - 1);
+                for x in x_start..=x_end {
+                    handle.inner.put_pixel(x as u32, y as u32, pixel);
+                }
+                i += 2;
+            }
+        }
+    }
+
+    // Draw outline (always for outline-only, or after fill when outline requested)
+    if !fill {
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let x0 = points[i * 2];
+            let y0 = points[i * 2 + 1];
+            let x1 = points[j * 2];
+            let y1 = points[j * 2 + 1];
+            draw_line(handle, x0, y0, x1, y1, color, 1);
+        }
+    }
+}
+
 /// 8×16 monospace bitmap font covering ASCII 32–126 (95 glyphs).
 /// Each glyph is 16 bytes (one byte per row, 8 pixels wide).
 #[rustfmt::skip]
