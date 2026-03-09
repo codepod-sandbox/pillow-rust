@@ -236,6 +236,73 @@ class Image:
         """Alpha composite *im* over this image."""
         return Image(_pil_native.image_alpha_composite(self._handle, im._handle))
 
+    # -- channel access -----------------------------------------------------
+
+    def getchannel(self, channel):
+        """Return a single channel as an L-mode image.
+        *channel* can be an index (0, 1, 2, ...) or a name ('R', 'G', 'B', 'A').
+        """
+        if isinstance(channel, str):
+            channel_map = {
+                "R": 0, "G": 1, "B": 2, "A": 3,
+                "L": 0,
+            }
+            idx = channel_map.get(channel.upper())
+            if idx is None:
+                raise ValueError(f"unknown channel name: {channel}")
+        else:
+            idx = int(channel)
+        bands = self.split()
+        if idx < 0 or idx >= len(bands):
+            raise ValueError(f"channel index {idx} out of range for mode {self.mode}")
+        return bands[idx]
+
+    # -- reduce / downsample ------------------------------------------------
+
+    def reduce(self, factor, box=None):
+        """Return a copy reduced by integer *factor*."""
+        if isinstance(factor, int):
+            fx, fy = factor, factor
+        else:
+            fx, fy = factor
+        if box is not None:
+            src = self.crop(box)
+        else:
+            src = self
+        w, h = src.size
+        new_w = max(1, w // fx)
+        new_h = max(1, h // fy)
+        return src.resize((new_w, new_h))
+
+    # -- stubs for compatibility -------------------------------------------
+
+    def load(self):
+        """No-op — pixels are always loaded in our implementation."""
+        pass
+
+    def show(self, title=None):
+        """No-op — display is not available in sandbox."""
+        pass
+
+    def tell(self):
+        """Return current frame number (always 0 for single-frame images)."""
+        return 0
+
+    def seek(self, frame):
+        """Seek to frame number. Only frame 0 is supported."""
+        if frame != 0:
+            raise EOFError("no more frames")
+
+    @property
+    def n_frames(self):
+        """Number of frames (always 1 for non-animated images)."""
+        return 1
+
+    @property
+    def is_animated(self):
+        """Whether the image has multiple frames."""
+        return False
+
     # -- filter -------------------------------------------------------------
 
     def filter(self, f):
@@ -341,6 +408,37 @@ def blend(im1, im2, alpha):
     if im1.mode != "RGBA":
         out = out.convert(im1.mode)
     return out
+
+
+def eval(image, func):
+    """Apply *func* to each pixel value and return a new image."""
+    return image.point(func)
+
+
+def linear_gradient(mode):
+    """Create a 256x256 linear gradient image."""
+    im = new("L", (256, 256), 0)
+    for y in range(256):
+        for x in range(256):
+            im.putpixel((x, y), y)
+    if mode != "L":
+        im = im.convert(mode)
+    return im
+
+
+def radial_gradient(mode):
+    """Create a 256x256 radial gradient image."""
+    im = new("L", (256, 256), 0)
+    cx, cy = 127.5, 127.5
+    for y in range(256):
+        for x in range(256):
+            dx = x - cx
+            dy = y - cy
+            d = int(min(255, (dx * dx + dy * dy) ** 0.5 * 255 / 180.3))
+            im.putpixel((x, y), d)
+    if mode != "L":
+        im = im.convert(mode)
+    return im
 
 
 def composite(im1, im2, mask):

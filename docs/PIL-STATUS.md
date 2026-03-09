@@ -51,6 +51,15 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 | `image.format` | Done | source format string (JPEG, PNG, etc.) |
 | `image.quantize(colors)` | Done | median-cut, returns RGB |
 | `image.getcolors(maxcolors)` | Done | returns list of (count, color) or None |
+| `image.getchannel(channel)` | Done | by name ('R','G','B','A') or index |
+| `image.reduce(factor)` | Done | integer downscale, supports tuple |
+| `image.load()` | Done | no-op stub |
+| `image.show()` | Done | no-op stub |
+| `image.tell()` / `image.seek()` | Done | frame stubs (single-frame only) |
+| `image.n_frames` / `image.is_animated` | Done | always 1 / False |
+| `Image.eval(image, func)` | Done | apply function to each pixel |
+| `Image.linear_gradient(mode)` | Done | 256x256 gradient |
+| `Image.radial_gradient(mode)` | Done | 256x256 gradient |
 
 ### PIL.ImageDraw
 
