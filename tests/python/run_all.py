@@ -27,6 +27,7 @@ test_files = [
     "test_imagechops",
     "test_quantize",
     "test_image_methods",
+    "test_transform",
 ]
 
 total_pass = 0

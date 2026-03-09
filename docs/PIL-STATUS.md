@@ -60,6 +60,26 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 | `Image.eval(image, func)` | Done | apply function to each pixel |
 | `Image.linear_gradient(mode)` | Done | 256x256 gradient |
 | `Image.radial_gradient(mode)` | Done | 256x256 gradient |
+| `image.transform(size, AFFINE, data)` | Done | 6-coeff affine |
+| `image.transform(size, PERSPECTIVE, data)` | Done | 8-coeff perspective |
+
+### PIL.ImageSequence
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `Iterator(im)` | Done | iterates frames (single-frame for now) |
+| `all_frames(im, func)` | Done | list of frame copies |
+
+### PIL.ImagePath
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `Path(xy)` | Done | from tuples or flat list |
+| `path.tolist(flat)` | Done | |
+| `path.getbbox()` | Done | |
+| `path.compact(distance)` | Done | |
+| `path.map(func)` | Done | |
+| `path.transform(matrix)` | Done | 6-element affine |
 
 ### PIL.ImageDraw
 
@@ -210,12 +230,7 @@ Features LLMs commonly generate code with.
 
 Less common but occasionally used.
 
-### Image transforms
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| `image.transform(size, method, data)` | TODO | affine/perspective |
-| ~~`image.quantize(colors)`~~ | Done | moved to Implemented |
+### ~~Image transforms~~ — moved to Implemented
 
 ### Additional modes
 
@@ -248,8 +263,8 @@ Rarely used by LLMs.
 
 - ~~`ImageChops`~~ — moved to Implemented
 - `ImageMorph` — morphological operations
-- `ImagePath` — 2D path objects
-- `ImageSequence` — GIF/APNG animation frame iteration
+- ~~`ImagePath`~~ — moved to Implemented
+- ~~`ImageSequence`~~ — moved to Implemented
 - `ImageGrab` — screen capture (N/A in WASM)
 - `ImageTk` — Tkinter integration (N/A in WASM)
 - Color space conversions (HSV, LAB, CMYK)

@@ -271,6 +271,79 @@ pub fn transpose(handle: &ImageHandle, method: u8) -> Result<ImageHandle> {
 }
 
 // ---------------------------------------------------------------------------
+// Affine / perspective transform
+// ---------------------------------------------------------------------------
+
+/// Apply an affine transform. `data` is [a, b, c, d, e, f] where:
+/// source_x = a * out_x + b * out_y + c
+/// source_y = d * out_x + e * out_y + f
+pub fn transform_affine(
+    handle: &ImageHandle,
+    out_w: u32,
+    out_h: u32,
+    data: &[f64; 6],
+) -> ImageHandle {
+    let (sw, sh) = handle.inner.dimensions();
+    let [a, b, c, d, e, f] = *data;
+    let src_mode = mode(handle);
+
+    let mut out = DynamicImage::new_rgba8(out_w, out_h);
+    for oy in 0..out_h {
+        for ox in 0..out_w {
+            let sx = (a * ox as f64 + b * oy as f64 + c).round() as i32;
+            let sy = (d * ox as f64 + e * oy as f64 + f).round() as i32;
+            if sx >= 0 && sx < sw as i32 && sy >= 0 && sy < sh as i32 {
+                out.put_pixel(ox, oy, handle.inner.get_pixel(sx as u32, sy as u32));
+            }
+        }
+    }
+
+    let out = match src_mode {
+        "L" => DynamicImage::ImageLuma8(out.to_luma8()),
+        "LA" => DynamicImage::ImageLumaA8(out.to_luma_alpha8()),
+        "RGB" => DynamicImage::ImageRgb8(out.to_rgb8()),
+        _ => out,
+    };
+    ImageHandle { inner: out }
+}
+
+/// Apply a perspective transform. `data` is [a, b, c, d, e, f, g, h] where:
+/// source_x = (a * out_x + b * out_y + c) / (g * out_x + h * out_y + 1)
+/// source_y = (d * out_x + e * out_y + f) / (g * out_x + h * out_y + 1)
+pub fn transform_perspective(
+    handle: &ImageHandle,
+    out_w: u32,
+    out_h: u32,
+    data: &[f64; 8],
+) -> ImageHandle {
+    let (sw, sh) = handle.inner.dimensions();
+    let src_mode = mode(handle);
+
+    let mut out = DynamicImage::new_rgba8(out_w, out_h);
+    for oy in 0..out_h {
+        for ox in 0..out_w {
+            let denom = data[6] * ox as f64 + data[7] * oy as f64 + 1.0;
+            if denom.abs() < 1e-10 {
+                continue;
+            }
+            let sx = ((data[0] * ox as f64 + data[1] * oy as f64 + data[2]) / denom).round() as i32;
+            let sy = ((data[3] * ox as f64 + data[4] * oy as f64 + data[5]) / denom).round() as i32;
+            if sx >= 0 && sx < sw as i32 && sy >= 0 && sy < sh as i32 {
+                out.put_pixel(ox, oy, handle.inner.get_pixel(sx as u32, sy as u32));
+            }
+        }
+    }
+
+    let out = match src_mode {
+        "L" => DynamicImage::ImageLuma8(out.to_luma8()),
+        "LA" => DynamicImage::ImageLumaA8(out.to_luma_alpha8()),
+        "RGB" => DynamicImage::ImageRgb8(out.to_rgb8()),
+        _ => out,
+    };
+    ImageHandle { inner: out }
+}
+
+// ---------------------------------------------------------------------------
 // Mode conversion
 // ---------------------------------------------------------------------------
 

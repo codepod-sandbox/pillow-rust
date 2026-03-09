@@ -22,6 +22,10 @@ BILINEAR = "bilinear"
 BICUBIC = "bicubic"
 LANCZOS = "lanczos"
 
+# Transform methods
+AFFINE = 0
+PERSPECTIVE = 1
+
 # ---------------------------------------------------------------------------
 # Image class
 # ---------------------------------------------------------------------------
@@ -150,6 +154,18 @@ class Image:
     def convert(self, mode, **_kw):
         """Return a copy converted to the given mode ('RGB', 'L', etc.)."""
         return Image(_pil_native.image_convert(self._handle, mode))
+
+    def transform(self, size, method, data=None, resample=0, fill=1, fillcolor=None):
+        """Apply a geometric transform and return a new image."""
+        coeffs = [float(v) for v in data]
+        if method == AFFINE:
+            return Image(_pil_native.image_transform_affine(
+                self._handle, size[0], size[1], coeffs))
+        elif method == PERSPECTIVE:
+            return Image(_pil_native.image_transform_perspective(
+                self._handle, size[0], size[1], coeffs))
+        else:
+            raise ValueError(f"unsupported transform method: {method}")
 
     # -- serialisation ------------------------------------------------------
 

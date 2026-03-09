@@ -728,6 +728,58 @@ pub mod _pil_native {
             .map_err(|e| vm.new_value_error(e.to_string()))
     }
 
+    // -- Transform ----------------------------------------------------------
+
+    #[pyfunction]
+    fn image_transform_affine(
+        handle_id: usize,
+        out_w: u32,
+        out_h: u32,
+        data: Vec<f64>,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        if data.len() != 6 {
+            return Err(vm.new_value_error("affine transform needs 6 coefficients".to_string()));
+        }
+        let coeffs: [f64; 6] = [data[0], data[1], data[2], data[3], data[4], data[5]];
+        let handle = IMAGES.with(|m| {
+            let map = m.borrow();
+            map.get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))
+                .cloned()
+        })?;
+        Ok(alloc(pil_rust_core::transform_affine(
+            &handle, out_w, out_h, &coeffs,
+        )))
+    }
+
+    #[pyfunction]
+    fn image_transform_perspective(
+        handle_id: usize,
+        out_w: u32,
+        out_h: u32,
+        data: Vec<f64>,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        if data.len() != 8 {
+            return Err(
+                vm.new_value_error("perspective transform needs 8 coefficients".to_string())
+            );
+        }
+        let coeffs: [f64; 8] = [
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+        ];
+        let handle = IMAGES.with(|m| {
+            let map = m.borrow();
+            map.get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))
+                .cloned()
+        })?;
+        Ok(alloc(pil_rust_core::transform_perspective(
+            &handle, out_w, out_h, &coeffs,
+        )))
+    }
+
     // -- Quantize / getcolors -----------------------------------------------
 
     #[pyfunction]
