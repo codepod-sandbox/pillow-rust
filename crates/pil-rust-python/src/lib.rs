@@ -100,6 +100,20 @@ pub mod _pil_native {
             .map_err(|e| vm.new_value_error(e.to_string()))
     }
 
+    #[pyfunction]
+    fn image_save_with_quality(
+        handle_id: usize,
+        format: String,
+        quality: u8,
+        vm: &VirtualMachine,
+    ) -> PyResult<Vec<u8>> {
+        with(handle_id, |h| {
+            pil_rust_core::save_with_options(h, &format, Some(quality))
+        })
+        .map_err(|e| vm.new_value_error(e))?
+        .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
     // -- Properties --------------------------------------------------------
 
     #[pyfunction]

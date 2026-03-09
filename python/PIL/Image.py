@@ -31,6 +31,8 @@ class Image:
 
     def __init__(self, _handle):
         self._handle = _handle
+        self.info = {}
+        self.format = None
 
     # -- properties ---------------------------------------------------------
 
@@ -151,13 +153,21 @@ class Image:
 
     # -- serialisation ------------------------------------------------------
 
-    def save(self, fp, format=None, **_kw):
-        """Save the image to *fp* (filename or file-like object)."""
+    def save(self, fp, format=None, **params):
+        """Save the image to *fp* (filename or file-like object).
+
+        Keyword arguments are format-specific. JPEG supports ``quality=``
+        (1-95, default 75).
+        """
         if format is None and isinstance(fp, str):
             ext = fp.rsplit(".", 1)[-1] if "." in fp else ""
             format = ext.lower() or "png"
         fmt = format or "png"
-        data = _pil_native.image_save(self._handle, fmt)
+        quality = params.get("quality")
+        if quality is not None:
+            data = _pil_native.image_save_with_quality(self._handle, fmt, int(quality))
+        else:
+            data = _pil_native.image_save(self._handle, fmt)
         if isinstance(fp, str):
             with __builtins__["open"](fp, "wb") if isinstance(__builtins__, dict) else __builtins__.open(fp, "wb") as f:
                 f.write(data)
@@ -260,7 +270,13 @@ def open(fp, mode="r"):
         data = bytes(fp)
     else:
         data = fp.read()
-    return Image(_pil_native.image_open(data))
+    img = Image(_pil_native.image_open(data))
+    if isinstance(fp, str) and "." in fp:
+        ext = fp.rsplit(".", 1)[-1].upper()
+        fmt_map = {"JPG": "JPEG", "PNG": "PNG", "GIF": "GIF", "BMP": "BMP",
+                   "TIFF": "TIFF", "TIF": "TIFF", "WEBP": "WEBP", "JPEG": "JPEG"}
+        img.format = fmt_map.get(ext, ext)
+    return img
 
 
 def new(mode, size, color=0):

@@ -6,7 +6,7 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 
 **Supported modes:** L, LA, RGB, RGBA
 
-**Tests:** 173 passing across 8 test files
+**Tests:** 173+ passing across 14 test files
 
 ---
 
@@ -21,7 +21,7 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 | `Image.frombytes(mode, size, data)` | Done | |
 | `Image.fromarray(obj, mode)` | Done | numpy-like arrays |
 | `Image.merge(mode, bands)` | Done | |
-| `image.save(fp, format)` | Done | PNG, JPEG, GIF, BMP, TIFF, WebP |
+| `image.save(fp, format, quality=)` | Done | PNG, JPEG, GIF, BMP, TIFF, WebP; JPEG quality param |
 | `image.copy()` | Done | |
 | `image.close()` | Done | context manager supported |
 | `image.convert(mode)` | Done | between L/LA/RGB/RGBA |
@@ -47,6 +47,8 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 | `image.alpha_composite(im)` | Done | proper alpha compositing |
 | `Image.blend(im1, im2, alpha)` | Done | linear interpolation |
 | `Image.composite(im1, im2, mask)` | Done | mask-based selection |
+| `image.info` | Done | metadata dict (empty on open) |
+| `image.format` | Done | source format string (JPEG, PNG, etc.) |
 
 ### PIL.ImageDraw
 
@@ -140,6 +142,27 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 | `getcolor(color, mode)` | Done | converts to L/RGB/RGBA |
 | `colormap` | Done | 148 CSS named colors |
 
+### PIL.ImageChops
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `add(im1, im2, scale, offset)` | Done | clamped to 0-255 |
+| `add_modulo(im1, im2)` | Done | wraps at 256 |
+| `subtract(im1, im2, scale, offset)` | Done | clamped to 0-255 |
+| `subtract_modulo(im1, im2)` | Done | wraps at 256 |
+| `multiply(im1, im2)` | Done | |
+| `screen(im1, im2)` | Done | |
+| `soft_light(im1, im2)` | Done | |
+| `hard_light(im1, im2)` | Done | |
+| `overlay(im1, im2)` | Done | |
+| `darker(im1, im2)` | Done | min per pixel |
+| `lighter(im1, im2)` | Done | max per pixel |
+| `difference(im1, im2)` | Done | |
+| `invert(im)` | Done | |
+| `constant(im, value)` | Done | |
+| `duplicate(im)` | Done | |
+| `offset(im, xoffset, yoffset)` | Done | wraps around edges |
+
 ### PIL.ImageFont
 
 | Feature | Status | Notes |
@@ -193,21 +216,16 @@ Less common but occasionally used.
 | `F` (32-bit float) | TODO | |
 | `CMYK` | TODO | |
 
-### Image metadata
+### ~~Image metadata~~ — moved to Implemented
+
+### ~~Save options~~ — JPEG `quality=` moved to Implemented
+
+### Save options (remaining)
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `image.info` | TODO | metadata dict |
-| `image.format` | TODO | source format string |
-| `image.getexif()` | TODO | EXIF data |
-
-### Save options
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| JPEG `quality=` | TODO | |
 | PNG `optimize=` | TODO | |
-| Format-specific params | TODO | |
+| Other format-specific params | TODO | |
 
 ### ~~ImageOps additions~~ — moved to Implemented
 
@@ -217,7 +235,7 @@ Less common but occasionally used.
 
 Rarely used by LLMs.
 
-- `ImageChops` — channel arithmetic (add, subtract, multiply, screen, etc.)
+- ~~`ImageChops`~~ — moved to Implemented
 - `ImageMorph` — morphological operations
 - `ImagePath` — 2D path objects
 - `ImageSequence` — GIF/APNG animation frame iteration

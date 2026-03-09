@@ -24,6 +24,7 @@ test_files = [
     "test_imagefilter_extra",
     "test_composition",
     "test_imageops_extra",
+    "test_imagechops",
 ]
 
 total_pass = 0

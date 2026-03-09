@@ -88,9 +88,27 @@ pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<Im
 }
 
 pub fn save(handle: &ImageHandle, format: &str) -> Result<Vec<u8>> {
-    let fmt = parse_format(format)?;
+    save_with_options(handle, format, None)
+}
+
+pub fn save_with_options(
+    handle: &ImageHandle,
+    format: &str,
+    quality: Option<u8>,
+) -> Result<Vec<u8>> {
     let mut buf = Cursor::new(Vec::new());
-    handle.inner.write_to(&mut buf, fmt)?;
+    match format.to_ascii_lowercase().as_str() {
+        "jpeg" | "jpg" => {
+            let q = quality.unwrap_or(75);
+            let rgb = handle.inner.to_rgb8();
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q);
+            rgb.write_with_encoder(encoder)?;
+        }
+        _ => {
+            let fmt = parse_format(format)?;
+            handle.inner.write_to(&mut buf, fmt)?;
+        }
+    }
     Ok(buf.into_inner())
 }
 
