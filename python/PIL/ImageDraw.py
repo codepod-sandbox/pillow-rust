@@ -49,6 +49,59 @@ class ImageDraw:
         _pil_native.draw_line(self._image._handle, list(coords), list(color), width)
 
 
+    def polygon(self, xy, fill=None, outline=None, width=1):
+        """Draw a polygon.
+
+        *xy* is a sequence of points ``[(x0,y0), (x1,y1), ...]`` or flat ``[x0,y0,x1,y1,...]``.
+        """
+        coords = _normalise_xy(xy)
+        if fill is not None:
+            color = fill
+            if isinstance(color, int):
+                color = (color, color, color)
+            _pil_native.draw_polygon(
+                self._image._handle, list(coords), list(color), True
+            )
+        if outline is not None:
+            color = outline
+            if isinstance(color, int):
+                color = (color, color, color)
+            _pil_native.draw_polygon(
+                self._image._handle, list(coords), list(color), False
+            )
+        elif fill is None:
+            color = (255, 255, 255)
+            _pil_native.draw_polygon(
+                self._image._handle, list(coords), list(color), False
+            )
+
+    def arc(self, xy, start, end, fill=None, width=1):
+        """Draw an arc (portion of ellipse outline).
+
+        *xy* is the bounding box ``[(x0,y0),(x1,y1)]`` or ``[x0,y0,x1,y1]``.
+        """
+        coords = _normalise_box(xy)
+        color = fill or (255, 255, 255)
+        if isinstance(color, int):
+            color = (color, color, color)
+        _pil_native.draw_arc(
+            self._image._handle, list(coords), float(start), float(end), list(color)
+        )
+
+    def pieslice(self, xy, start, end, fill=None, outline=None, width=1):
+        """Draw a pie slice (filled arc with lines to center).
+
+        *xy* is the bounding box.
+        """
+        coords = _normalise_box(xy)
+        color = fill or outline or (255, 255, 255)
+        if isinstance(color, int):
+            color = (color, color, color)
+        _pil_native.draw_pieslice(
+            self._image._handle, list(coords), float(start), float(end),
+            list(color), fill is not None
+        )
+
     def text(self, xy, text, fill=None, font=None, anchor=None):
         """Draw text at the given position.
 

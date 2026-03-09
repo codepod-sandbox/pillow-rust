@@ -275,7 +275,7 @@ pub mod _pil_native {
     #[pyfunction]
     fn draw_rectangle(
         handle_id: usize,
-        xy: Vec<u32>,
+        xy: Vec<i32>,
         color: PyObjectRef,
         fill: bool,
         vm: &VirtualMachine,
@@ -345,6 +345,269 @@ pub mod _pil_native {
             pil_rust_core::draw_text(h, x, y, &text, sz, c, &anch)
         })
         .map_err(|e| vm.new_value_error(e))
+    }
+
+    // -- Paste -------------------------------------------------------------
+
+    #[pyfunction]
+    fn image_paste(
+        dst_id: usize,
+        src_id: usize,
+        x: i32,
+        y: i32,
+        mask_id: vm::function::OptionalArg<usize>,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        // We need both handles simultaneously, so extract clones
+        let src = IMAGES.with(|m| {
+            m.borrow()
+                .get(&src_id)
+                .cloned()
+                .ok_or_else(|| vm.new_value_error(format!("invalid src handle: {src_id}")))
+        })?;
+        let mask = match mask_id.into_option() {
+            Some(mid) => Some(IMAGES.with(|m| {
+                m.borrow()
+                    .get(&mid)
+                    .cloned()
+                    .ok_or_else(|| vm.new_value_error(format!("invalid mask handle: {mid}")))
+            })?),
+            None => None,
+        };
+        with_mut(dst_id, |dst| {
+            pil_rust_core::paste(dst, &src, x, y, mask.as_ref());
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
+    // -- Channel ops -------------------------------------------------------
+
+    #[pyfunction]
+    fn image_split(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let channels =
+            with(handle_id, |h| pil_rust_core::split(h)).map_err(|e| vm.new_value_error(e))?;
+        let ids: Vec<PyObjectRef> = channels
+            .into_iter()
+            .map(|c| vm.ctx.new_int(alloc(c) as i64).into())
+            .collect();
+        Ok(vm.ctx.new_list(ids).into())
+    }
+
+    #[pyfunction]
+    fn image_merge(mode: String, channel_ids: Vec<usize>, vm: &VirtualMachine) -> PyResult<usize> {
+        // Clone channels out to avoid holding IMAGES borrow while calling alloc
+        let cloned: Vec<pil_rust_core::ImageHandle> = IMAGES.with(|m| {
+            let map = m.borrow();
+            let mut channels = Vec::new();
+            for &id in &channel_ids {
+                let h = map
+                    .get(&id)
+                    .ok_or_else(|| vm.new_value_error(format!("invalid channel handle: {id}")))?;
+                channels.push(h.clone());
+            }
+            Ok(channels)
+        })?;
+        let refs: Vec<&pil_rust_core::ImageHandle> = cloned.iter().collect();
+        pil_rust_core::merge(&mode, &refs)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    // -- Statistics --------------------------------------------------------
+
+    #[pyfunction]
+    fn image_histogram(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let hist =
+            with(handle_id, |h| pil_rust_core::histogram(h)).map_err(|e| vm.new_value_error(e))?;
+        let items: Vec<PyObjectRef> = hist
+            .into_iter()
+            .map(|v| vm.ctx.new_int(v as i64).into())
+            .collect();
+        Ok(vm.ctx.new_list(items).into())
+    }
+
+    #[pyfunction]
+    fn image_getbbox(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let bbox =
+            with(handle_id, |h| pil_rust_core::getbbox(h)).map_err(|e| vm.new_value_error(e))?;
+        match bbox {
+            Some((x0, y0, x1, y1)) => Ok(vm::builtins::PyTuple::new_ref(
+                vec![
+                    vm.ctx.new_int(x0 as i32).into(),
+                    vm.ctx.new_int(y0 as i32).into(),
+                    vm.ctx.new_int(x1 as i32).into(),
+                    vm.ctx.new_int(y1 as i32).into(),
+                ],
+                &vm.ctx,
+            )
+            .into()),
+            None => Ok(vm.ctx.none()),
+        }
+    }
+
+    #[pyfunction]
+    fn image_getextrema(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let extrema =
+            with(handle_id, |h| pil_rust_core::getextrema(h)).map_err(|e| vm.new_value_error(e))?;
+        if extrema.len() == 1 {
+            Ok(vm::builtins::PyTuple::new_ref(
+                vec![
+                    vm.ctx.new_int(extrema[0].0 as i32).into(),
+                    vm.ctx.new_int(extrema[0].1 as i32).into(),
+                ],
+                &vm.ctx,
+            )
+            .into())
+        } else {
+            let tuples: Vec<PyObjectRef> = extrema
+                .iter()
+                .map(|&(lo, hi)| {
+                    vm::builtins::PyTuple::new_ref(
+                        vec![
+                            vm.ctx.new_int(lo as i32).into(),
+                            vm.ctx.new_int(hi as i32).into(),
+                        ],
+                        &vm.ctx,
+                    )
+                    .into()
+                })
+                .collect();
+            Ok(vm::builtins::PyTuple::new_ref(tuples, &vm.ctx).into())
+        }
+    }
+
+    // -- frombytes ---------------------------------------------------------
+
+    #[pyfunction]
+    fn image_frombytes(
+        mode: String,
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        pil_rust_core::frombytes(&mode, width, height, &data)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    // -- Drawing: polygon, arc, pieslice -----------------------------------
+
+    #[pyfunction]
+    fn draw_polygon(
+        handle_id: usize,
+        xy: Vec<i32>,
+        color: PyObjectRef,
+        fill: bool,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        let c = extract_color_rgba(&color, vm)?;
+        let points: Vec<(i32, i32)> = xy
+            .chunks(2)
+            .filter(|c| c.len() == 2)
+            .map(|c| (c[0], c[1]))
+            .collect();
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_polygon(h, &points, c, fill)
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn draw_arc(
+        handle_id: usize,
+        xy: Vec<i32>,
+        start: f64,
+        end: f64,
+        color: PyObjectRef,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        if xy.len() < 4 {
+            return Err(vm.new_value_error("arc xy must have 4 values".to_string()));
+        }
+        let c = extract_color_rgba(&color, vm)?;
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_arc(h, xy[0], xy[1], xy[2], xy[3], start, end, c)
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn draw_pieslice(
+        handle_id: usize,
+        xy: Vec<i32>,
+        start: f64,
+        end: f64,
+        color: PyObjectRef,
+        fill: bool,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        if xy.len() < 4 {
+            return Err(vm.new_value_error("pieslice xy must have 4 values".to_string()));
+        }
+        let c = extract_color_rgba(&color, vm)?;
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_pieslice(h, xy[0], xy[1], xy[2], xy[3], start, end, c, fill)
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
+    // -- Enhancement -------------------------------------------------------
+
+    #[pyfunction]
+    fn image_adjust_brightness(
+        handle_id: usize,
+        factor: f32,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::adjust_brightness(h, factor))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn image_adjust_contrast(
+        handle_id: usize,
+        factor: f32,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::adjust_contrast(h, factor))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn image_adjust_color(handle_id: usize, factor: f32, vm: &VirtualMachine) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::adjust_color(h, factor))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn image_adjust_sharpness(
+        handle_id: usize,
+        factor: f32,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::adjust_sharpness(h, factor))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    // -- ImageOps ----------------------------------------------------------
+
+    #[pyfunction]
+    fn image_autocontrast(handle_id: usize, vm: &VirtualMachine) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::autocontrast(h))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn image_invert(handle_id: usize, vm: &VirtualMachine) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::invert_image(h))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
     }
 
     // -- Helpers -----------------------------------------------------------

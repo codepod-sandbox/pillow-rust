@@ -64,6 +64,65 @@ class Image:
             color = (color,)
         _pil_native.image_putpixel(self._handle, xy[0], xy[1], list(color))
 
+    # -- paste --------------------------------------------------------------
+
+    def paste(self, im, box=None, mask=None):
+        """Paste *im* onto this image. *box* is (x, y) or (x, y, x1, y1)."""
+        if box is None:
+            x, y = 0, 0
+        elif len(box) == 2:
+            x, y = box
+        else:
+            x, y = box[0], box[1]
+        src_handle = im._handle if hasattr(im, '_handle') else im
+        mask_handle = mask._handle if mask is not None and hasattr(mask, '_handle') else None
+        if mask_handle is not None:
+            _pil_native.image_paste(self._handle, src_handle, x, y, mask_handle)
+        else:
+            _pil_native.image_paste(self._handle, src_handle, x, y)
+
+    # -- channel ops --------------------------------------------------------
+
+    def split(self):
+        """Split into individual channels as L-mode images."""
+        ids = _pil_native.image_split(self._handle)
+        return tuple(Image(h) for h in ids)
+
+    # -- statistics ---------------------------------------------------------
+
+    def histogram(self):
+        """Return histogram as list of ints (256 values per channel)."""
+        return list(_pil_native.image_histogram(self._handle))
+
+    def getbbox(self):
+        """Return bounding box of non-zero pixels, or None."""
+        return _pil_native.image_getbbox(self._handle)
+
+    def getextrema(self):
+        """Return min/max pixel value(s)."""
+        return _pil_native.image_getextrema(self._handle)
+
+    # -- thumbnail ----------------------------------------------------------
+
+    def thumbnail(self, size, resample=None, **_kw):
+        """Modify in place to fit within *size*, preserving aspect ratio."""
+        w, h = self.size
+        tw, th = size
+        if w <= tw and h <= th:
+            return  # already fits, PIL never upsizes
+        ratio = min(tw / w, th / h)
+        new_w = max(1, int(w * ratio))
+        new_h = max(1, int(h * ratio))
+        if resample is not None:
+            resized = Image(_pil_native.image_resize(self._handle, new_w, new_h, resample))
+        else:
+            resized = Image(_pil_native.image_resize(self._handle, new_w, new_h))
+        # Replace our handle
+        old = self._handle
+        self._handle = resized._handle
+        resized._handle = None  # prevent resized.__del__ from closing it
+        _pil_native.image_close(old)
+
     # -- transforms ---------------------------------------------------------
 
     def resize(self, size, resample=None, **_kw):
@@ -125,7 +184,8 @@ class Image:
 
     def filter(self, f):
         """Apply *f* (an ImageFilter object) and return a new Image."""
-        return Image(_pil_native.image_filter(self._handle, f.name, getattr(f, "args", None)))
+        args = getattr(f, "args", None) or []
+        return Image(_pil_native.image_filter(self._handle, f.name, args))
 
     # -- dunder helpers -----------------------------------------------------
 
@@ -179,3 +239,35 @@ def new(mode, size, color=0):
     elif isinstance(color, tuple):
         color = list(color)
     return Image(_pil_native.image_new(mode, size[0], size[1], color))
+
+
+def frombytes(mode, size, data):
+    """Create an image from raw pixel *data*."""
+    return Image(_pil_native.image_frombytes(mode, size[0], size[1], data))
+
+
+def fromarray(obj, mode=None):
+    """Create an image from a numpy-like array.
+
+    The array must expose ``.shape``, ``.dtype``, and ``.tobytes()``
+    (or be convertible via ``bytes(obj)``).
+    """
+    shape = obj.shape
+    if len(shape) == 2:
+        h, w = shape
+        if mode is None:
+            mode = "L"
+    elif len(shape) == 3:
+        h, w, c = shape
+        if mode is None:
+            mode = {1: "L", 2: "LA", 3: "RGB", 4: "RGBA"}.get(c, "RGBA")
+    else:
+        raise ValueError("unsupported array shape: " + str(shape))
+    raw = obj.tobytes() if hasattr(obj, 'tobytes') else bytes(obj)
+    return frombytes(mode, (w, h), raw)
+
+
+def merge(mode, bands):
+    """Merge individual L-mode band images into a multi-channel image."""
+    ids = [b._handle for b in bands]
+    return Image(_pil_native.image_merge(mode, ids))

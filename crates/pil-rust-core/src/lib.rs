@@ -132,7 +132,21 @@ pub fn getpixel(handle: &ImageHandle, x: u32, y: u32) -> [u8; 4] {
 }
 
 pub fn putpixel(handle: &mut ImageHandle, x: u32, y: u32, color: [u8; 4]) {
-    handle.inner.put_pixel(x, y, image::Rgba(color));
+    // Write in the image's native format to avoid mode corruption
+    match &mut handle.inner {
+        DynamicImage::ImageLuma8(buf) => {
+            buf.put_pixel(x, y, image::Luma([color[0]]));
+        }
+        DynamicImage::ImageLumaA8(buf) => {
+            buf.put_pixel(x, y, image::LumaA([color[0], color[3]]));
+        }
+        DynamicImage::ImageRgb8(buf) => {
+            buf.put_pixel(x, y, image::Rgb([color[0], color[1], color[2]]));
+        }
+        _ => {
+            handle.inner.put_pixel(x, y, image::Rgba(color));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -155,9 +169,10 @@ pub fn crop(handle: &ImageHandle, x: u32, y: u32, w: u32, h: u32) -> ImageHandle
 pub fn rotate(handle: &ImageHandle, degrees: f32) -> ImageHandle {
     let deg = ((degrees % 360.0) + 360.0) % 360.0;
 
+    // PIL rotates CCW; image crate rotates CW — swap 90↔270
     if (deg - 90.0).abs() < 0.5 {
         return ImageHandle {
-            inner: handle.inner.rotate90(),
+            inner: handle.inner.rotate270(),
         };
     }
     if (deg - 180.0).abs() < 0.5 {
@@ -167,7 +182,7 @@ pub fn rotate(handle: &ImageHandle, degrees: f32) -> ImageHandle {
     }
     if (deg - 270.0).abs() < 0.5 {
         return ImageHandle {
-            inner: handle.inner.rotate270(),
+            inner: handle.inner.rotate90(),
         };
     }
     if deg < 0.5 || (360.0 - deg) < 0.5 {
@@ -196,6 +211,13 @@ pub fn rotate(handle: &ImageHandle, degrees: f32) -> ImageHandle {
             }
         }
     }
+    // Convert back to original mode so rotation preserves mode
+    let out = match mode(handle) {
+        "L" => DynamicImage::ImageLuma8(out.to_luma8()),
+        "LA" => DynamicImage::ImageLumaA8(out.to_luma_alpha8()),
+        "RGB" => DynamicImage::ImageRgb8(out.to_rgb8()),
+        _ => out, // RGBA already
+    };
     ImageHandle { inner: out }
 }
 
@@ -207,16 +229,17 @@ pub fn transpose(handle: &ImageHandle, method: u8) -> Result<ImageHandle> {
     let out = match method {
         0 => img.fliph(),
         1 => img.flipv(),
-        2 => img.rotate90(),
+        // PIL ROTATE_90 is CCW; image crate rotate90() is CW — swap them
+        2 => img.rotate270(),
         3 => img.rotate180(),
-        4 => img.rotate270(),
+        4 => img.rotate90(),
         5 => {
-            // TRANSPOSE = flip along main diagonal (swap x/y then flip)
+            // TRANSPOSE = mirror along main diagonal: (x,y) → (y,x)
             let rotated = img.rotate90();
             rotated.fliph()
         }
         6 => {
-            // TRANSVERSE = flip along anti-diagonal
+            // TRANSVERSE = mirror along anti-diagonal: (x,y) → (H-1-y, W-1-x)
             let rotated = img.rotate90();
             rotated.flipv()
         }
@@ -275,16 +298,18 @@ pub fn filter(handle: &ImageHandle, name: &str, args: &[f32]) -> Result<ImageHan
 
 pub fn draw_rectangle(
     handle: &mut ImageHandle,
-    x0: u32,
-    y0: u32,
-    x1: u32,
-    y1: u32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
     color: [u8; 4],
     fill: bool,
 ) {
     let (w, h) = handle.inner.dimensions();
-    let x1 = x1.min(w.saturating_sub(1));
-    let y1 = y1.min(h.saturating_sub(1));
+    let x0 = x0.max(0) as u32;
+    let y0 = y0.max(0) as u32;
+    let x1 = (x1.max(0) as u32).min(w.saturating_sub(1));
+    let y1 = (y1.max(0) as u32).min(h.saturating_sub(1));
     let pixel = image::Rgba(color);
 
     if fill {
@@ -676,6 +701,626 @@ pub fn draw_text(
     }
 
     let _ = glyph_h; // suppress unused warning
+}
+
+// ---------------------------------------------------------------------------
+// Paste (compositing)
+// ---------------------------------------------------------------------------
+
+pub fn paste(dst: &mut ImageHandle, src: &ImageHandle, x: i32, y: i32, mask: Option<&ImageHandle>) {
+    let (dw, dh) = dst.inner.dimensions();
+    let (sw, sh) = src.inner.dimensions();
+
+    for sy in 0..sh {
+        for sx in 0..sw {
+            let dx = x + sx as i32;
+            let dy = y + sy as i32;
+            if dx < 0 || dy < 0 || dx >= dw as i32 || dy >= dh as i32 {
+                continue;
+            }
+            let src_pixel = src.inner.get_pixel(sx, sy);
+            let alpha = match &mask {
+                Some(m) => {
+                    let (mw, mh) = m.inner.dimensions();
+                    if sx < mw && sy < mh {
+                        m.inner.get_pixel(sx, sy).0[0] // use first channel as alpha
+                    } else {
+                        0
+                    }
+                }
+                None => 255,
+            };
+            if alpha == 255 {
+                putpixel(dst, dx as u32, dy as u32, src_pixel.0);
+            } else if alpha > 0 {
+                let dst_pixel = dst.inner.get_pixel(dx as u32, dy as u32);
+                let a = alpha as f32 / 255.0;
+                let blend =
+                    |s: u8, d: u8| -> u8 { (s as f32 * a + d as f32 * (1.0 - a)).round() as u8 };
+                let blended = [
+                    blend(src_pixel.0[0], dst_pixel.0[0]),
+                    blend(src_pixel.0[1], dst_pixel.0[1]),
+                    blend(src_pixel.0[2], dst_pixel.0[2]),
+                    blend(src_pixel.0[3], dst_pixel.0[3]),
+                ];
+                putpixel(dst, dx as u32, dy as u32, blended);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Channel operations
+// ---------------------------------------------------------------------------
+
+pub fn split(handle: &ImageHandle) -> Vec<ImageHandle> {
+    let (w, h) = handle.inner.dimensions();
+    let rgba = handle.inner.to_rgba8();
+
+    let mut channels = Vec::new();
+    let num = match mode(handle) {
+        "L" => 1,
+        "LA" => 2,
+        "RGB" => 3,
+        _ => 4, // RGBA
+    };
+
+    for ch in 0..num {
+        let idx = if mode(handle) == "LA" && ch == 1 {
+            3
+        } else {
+            ch
+        }; // LA: luminance + alpha
+        let buf = ImageBuffer::from_fn(w, h, |x, y| image::Luma([rgba.get_pixel(x, y).0[idx]]));
+        channels.push(ImageHandle {
+            inner: DynamicImage::ImageLuma8(buf),
+        });
+    }
+    channels
+}
+
+pub fn merge(target_mode: &str, channels: &[&ImageHandle]) -> Result<ImageHandle> {
+    let (w, h) = if let Some(first) = channels.first() {
+        first.inner.dimensions()
+    } else {
+        return Err(PilError::InvalidOperation("no channels provided".into()));
+    };
+
+    let get_ch =
+        |ch_idx: usize, x: u32, y: u32| -> u8 { channels[ch_idx].inner.get_pixel(x, y).0[0] };
+
+    let img = match target_mode {
+        "L" => {
+            if channels.len() < 1 {
+                return Err(PilError::InvalidOperation("L requires 1 channel".into()));
+            }
+            DynamicImage::ImageLuma8(ImageBuffer::from_fn(w, h, |x, y| {
+                image::Luma([get_ch(0, x, y)])
+            }))
+        }
+        "LA" => {
+            if channels.len() < 2 {
+                return Err(PilError::InvalidOperation("LA requires 2 channels".into()));
+            }
+            DynamicImage::ImageLumaA8(ImageBuffer::from_fn(w, h, |x, y| {
+                image::LumaA([get_ch(0, x, y), get_ch(1, x, y)])
+            }))
+        }
+        "RGB" => {
+            if channels.len() < 3 {
+                return Err(PilError::InvalidOperation("RGB requires 3 channels".into()));
+            }
+            DynamicImage::ImageRgb8(ImageBuffer::from_fn(w, h, |x, y| {
+                image::Rgb([get_ch(0, x, y), get_ch(1, x, y), get_ch(2, x, y)])
+            }))
+        }
+        "RGBA" => {
+            if channels.len() < 4 {
+                return Err(PilError::InvalidOperation(
+                    "RGBA requires 4 channels".into(),
+                ));
+            }
+            DynamicImage::ImageRgba8(ImageBuffer::from_fn(w, h, |x, y| {
+                image::Rgba([
+                    get_ch(0, x, y),
+                    get_ch(1, x, y),
+                    get_ch(2, x, y),
+                    get_ch(3, x, y),
+                ])
+            }))
+        }
+        _ => return Err(PilError::UnsupportedMode(target_mode.to_string())),
+    };
+    Ok(ImageHandle { inner: img })
+}
+
+// ---------------------------------------------------------------------------
+// Statistics / analysis
+// ---------------------------------------------------------------------------
+
+pub fn histogram(handle: &ImageHandle) -> Vec<u32> {
+    let (w, h) = handle.inner.dimensions();
+    let m = mode(handle);
+    let num_channels = match m {
+        "L" => 1,
+        "LA" => 2,
+        "RGB" => 3,
+        _ => 4,
+    };
+    let mut hist = vec![0u32; 256 * num_channels];
+    let rgba = handle.inner.to_rgba8();
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y).0;
+            match m {
+                "L" => {
+                    hist[p[0] as usize] += 1;
+                }
+                "LA" => {
+                    hist[p[0] as usize] += 1;
+                    hist[256 + p[3] as usize] += 1;
+                }
+                "RGB" => {
+                    hist[p[0] as usize] += 1;
+                    hist[256 + p[1] as usize] += 1;
+                    hist[512 + p[2] as usize] += 1;
+                }
+                _ => {
+                    hist[p[0] as usize] += 1;
+                    hist[256 + p[1] as usize] += 1;
+                    hist[512 + p[2] as usize] += 1;
+                    hist[768 + p[3] as usize] += 1;
+                }
+            }
+        }
+    }
+    hist
+}
+
+pub fn getbbox(handle: &ImageHandle) -> Option<(u32, u32, u32, u32)> {
+    let (w, h) = handle.inner.dimensions();
+    let mut min_x = w;
+    let mut min_y = h;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+
+    for y in 0..h {
+        for x in 0..w {
+            let p = handle.inner.get_pixel(x, y).0;
+            let nonzero = p[0] != 0 || p[1] != 0 || p[2] != 0;
+            if nonzero {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if max_x < min_x {
+        None
+    } else {
+        Some((min_x, min_y, max_x + 1, max_y + 1))
+    }
+}
+
+pub fn getextrema(handle: &ImageHandle) -> Vec<(u8, u8)> {
+    let (w, h) = handle.inner.dimensions();
+    let m = mode(handle);
+    let num_channels = match m {
+        "L" => 1,
+        "LA" => 2,
+        "RGB" => 3,
+        _ => 4,
+    };
+    let mut mins = vec![255u8; num_channels];
+    let mut maxs = vec![0u8; num_channels];
+    let rgba = handle.inner.to_rgba8();
+
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y).0;
+            let channels: Vec<u8> = match m {
+                "L" => vec![p[0]],
+                "LA" => vec![p[0], p[3]],
+                "RGB" => vec![p[0], p[1], p[2]],
+                _ => vec![p[0], p[1], p[2], p[3]],
+            };
+            for (i, &v) in channels.iter().enumerate() {
+                if v < mins[i] {
+                    mins[i] = v;
+                }
+                if v > maxs[i] {
+                    maxs[i] = v;
+                }
+            }
+        }
+    }
+    mins.into_iter().zip(maxs).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Construct from raw bytes
+// ---------------------------------------------------------------------------
+
+pub fn frombytes(mode_str: &str, width: u32, height: u32, data: &[u8]) -> Result<ImageHandle> {
+    let img = match mode_str {
+        "L" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            DynamicImage::ImageLuma8(buf)
+        }
+        "LA" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            DynamicImage::ImageLumaA8(buf)
+        }
+        "RGB" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            DynamicImage::ImageRgb8(buf)
+        }
+        "RGBA" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            DynamicImage::ImageRgba8(buf)
+        }
+        _ => return Err(PilError::UnsupportedMode(mode_str.to_string())),
+    };
+    Ok(ImageHandle { inner: img })
+}
+
+// ---------------------------------------------------------------------------
+// Drawing: polygon, arc, pieslice
+// ---------------------------------------------------------------------------
+
+pub fn draw_polygon(handle: &mut ImageHandle, points: &[(i32, i32)], color: [u8; 4], fill: bool) {
+    if points.len() < 2 {
+        return;
+    }
+    let (w, h) = handle.inner.dimensions();
+    let pixel = image::Rgba(color);
+
+    if fill && points.len() >= 3 {
+        // Scanline fill
+        let mut min_y = i32::MAX;
+        let mut max_y = i32::MIN;
+        for &(_, y) in points {
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+        min_y = min_y.max(0);
+        max_y = max_y.min(h as i32 - 1);
+
+        for y in min_y..=max_y {
+            let mut nodes = Vec::new();
+            let n = points.len();
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let (_, y0) = points[i];
+                let (_, y1) = points[j];
+                if (y0 <= y && y1 > y) || (y1 <= y && y0 > y) {
+                    let x0 = points[i].0 as f64;
+                    let x1 = points[j].0 as f64;
+                    let t = (y as f64 - y0 as f64) / (y1 as f64 - y0 as f64);
+                    nodes.push((x0 + t * (x1 - x0)) as i32);
+                }
+            }
+            nodes.sort_unstable();
+            for pair in nodes.chunks(2) {
+                if pair.len() == 2 {
+                    let x_start = pair[0].max(0);
+                    let x_end = pair[1].min(w as i32 - 1);
+                    for x in x_start..=x_end {
+                        handle.inner.put_pixel(x as u32, y as u32, pixel);
+                    }
+                }
+            }
+        }
+    }
+
+    // Draw outline
+    let n = points.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        draw_line(
+            handle,
+            points[i].0,
+            points[i].1,
+            points[j].0,
+            points[j].1,
+            color,
+            1,
+        );
+    }
+}
+
+pub fn draw_arc(
+    handle: &mut ImageHandle,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    start: f64,
+    end: f64,
+    color: [u8; 4],
+) {
+    let (w, h) = handle.inner.dimensions();
+    let pixel = image::Rgba(color);
+    let cx = (x0 + x1) as f64 / 2.0;
+    let cy = (y0 + y1) as f64 / 2.0;
+    let rx = (x1 - x0) as f64 / 2.0;
+    let ry = (y1 - y0) as f64 / 2.0;
+    if rx <= 0.0 || ry <= 0.0 {
+        return;
+    }
+
+    let steps = ((rx + ry) * 2.0) as usize;
+    let steps = steps.max(100);
+    let start_rad = start.to_radians();
+    let end_rad = end.to_radians();
+    let mut angle = start_rad;
+    let step = (end_rad - start_rad) / steps as f64;
+
+    for _ in 0..=steps {
+        let px = (cx + rx * angle.cos()).round() as i32;
+        let py = (cy + ry * angle.sin()).round() as i32;
+        if px >= 0 && px < w as i32 && py >= 0 && py < h as i32 {
+            handle.inner.put_pixel(px as u32, py as u32, pixel);
+        }
+        angle += step;
+    }
+}
+
+pub fn draw_pieslice(
+    handle: &mut ImageHandle,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    start: f64,
+    end: f64,
+    color: [u8; 4],
+    fill: bool,
+) {
+    let cx = (x0 + x1) as f64 / 2.0;
+    let cy = (y0 + y1) as f64 / 2.0;
+    let rx = (x1 - x0) as f64 / 2.0;
+    let ry = (y1 - y0) as f64 / 2.0;
+    if rx <= 0.0 || ry <= 0.0 {
+        return;
+    }
+
+    if fill {
+        // Build polygon: center + arc points + center
+        let steps = ((rx + ry) * 2.0) as usize;
+        let steps = steps.max(100);
+        let start_rad = start.to_radians();
+        let end_rad = end.to_radians();
+        let step = (end_rad - start_rad) / steps as f64;
+
+        let mut points = vec![(cx.round() as i32, cy.round() as i32)];
+        let mut angle = start_rad;
+        for _ in 0..=steps {
+            let px = (cx + rx * angle.cos()).round() as i32;
+            let py = (cy + ry * angle.sin()).round() as i32;
+            points.push((px, py));
+            angle += step;
+        }
+        points.push((cx.round() as i32, cy.round() as i32));
+        draw_polygon(handle, &points, color, true);
+    } else {
+        // Draw arc + two lines from center to arc endpoints
+        draw_arc(handle, x0, y0, x1, y1, start, end, color);
+        let start_rad = start.to_radians();
+        let end_rad = end.to_radians();
+        let cxi = cx.round() as i32;
+        let cyi = cy.round() as i32;
+        let sx = (cx + rx * start_rad.cos()).round() as i32;
+        let sy = (cy + ry * start_rad.sin()).round() as i32;
+        let ex = (cx + rx * end_rad.cos()).round() as i32;
+        let ey = (cy + ry * end_rad.sin()).round() as i32;
+        draw_line(handle, cxi, cyi, sx, sy, color, 1);
+        draw_line(handle, cxi, cyi, ex, ey, color, 1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Image enhancement
+// ---------------------------------------------------------------------------
+
+pub fn adjust_brightness(handle: &ImageHandle, factor: f32) -> ImageHandle {
+    let (w, h) = handle.inner.dimensions();
+    let m = mode(handle);
+    let rgba = handle.inner.to_rgba8();
+    let out = ImageBuffer::from_fn(w, h, |x, y| {
+        let p = rgba.get_pixel(x, y).0;
+        let clamp = |v: f32| -> u8 { v.round().max(0.0).min(255.0) as u8 };
+        image::Rgba([
+            clamp(p[0] as f32 * factor),
+            clamp(p[1] as f32 * factor),
+            clamp(p[2] as f32 * factor),
+            p[3],
+        ])
+    });
+    let img = match m {
+        "L" => DynamicImage::ImageLuma8(DynamicImage::ImageRgba8(out.clone()).to_luma8()),
+        "RGB" => DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(out.clone()).to_rgb8()),
+        _ => DynamicImage::ImageRgba8(out),
+    };
+    ImageHandle { inner: img }
+}
+
+pub fn adjust_contrast(handle: &ImageHandle, factor: f32) -> ImageHandle {
+    let (w, h) = handle.inner.dimensions();
+    let m = mode(handle);
+    // Compute mean luminance
+    let gray = handle.inner.to_luma8();
+    let mut sum = 0u64;
+    for p in gray.pixels() {
+        sum += p.0[0] as u64;
+    }
+    let mean = sum as f32 / (w * h) as f32;
+
+    let rgba = handle.inner.to_rgba8();
+    let out = ImageBuffer::from_fn(w, h, |x, y| {
+        let p = rgba.get_pixel(x, y).0;
+        let clamp = |v: f32| -> u8 { v.round().max(0.0).min(255.0) as u8 };
+        image::Rgba([
+            clamp(mean + (p[0] as f32 - mean) * factor),
+            clamp(mean + (p[1] as f32 - mean) * factor),
+            clamp(mean + (p[2] as f32 - mean) * factor),
+            p[3],
+        ])
+    });
+    let img = match m {
+        "L" => DynamicImage::ImageLuma8(DynamicImage::from(out).to_luma8()),
+        "RGB" => DynamicImage::ImageRgb8(DynamicImage::from(out).to_rgb8()),
+        _ => DynamicImage::ImageRgba8(out),
+    };
+    ImageHandle { inner: img }
+}
+
+pub fn adjust_color(handle: &ImageHandle, factor: f32) -> ImageHandle {
+    let (w, h) = handle.inner.dimensions();
+    let m = mode(handle);
+    let rgba = handle.inner.to_rgba8();
+    let gray = handle.inner.to_luma8();
+    let out = ImageBuffer::from_fn(w, h, |x, y| {
+        let p = rgba.get_pixel(x, y).0;
+        let g = gray.get_pixel(x, y).0[0];
+        let clamp = |v: f32| -> u8 { v.round().max(0.0).min(255.0) as u8 };
+        // Blend between grayscale (factor=0) and original (factor=1)
+        image::Rgba([
+            clamp(g as f32 + (p[0] as f32 - g as f32) * factor),
+            clamp(g as f32 + (p[1] as f32 - g as f32) * factor),
+            clamp(g as f32 + (p[2] as f32 - g as f32) * factor),
+            p[3],
+        ])
+    });
+    let img = match m {
+        "L" => DynamicImage::ImageLuma8(DynamicImage::from(out).to_luma8()),
+        "RGB" => DynamicImage::ImageRgb8(DynamicImage::from(out).to_rgb8()),
+        _ => DynamicImage::ImageRgba8(out),
+    };
+    ImageHandle { inner: img }
+}
+
+pub fn adjust_sharpness(handle: &ImageHandle, factor: f32) -> ImageHandle {
+    // Blend between blurred (factor=0) and original (factor=1), with >1 sharpening
+    let blurred = handle.inner.blur(1.0);
+    let (w, h) = handle.inner.dimensions();
+    let m = mode(handle);
+    let orig = handle.inner.to_rgba8();
+    let blur = blurred.to_rgba8();
+    let out = ImageBuffer::from_fn(w, h, |x, y| {
+        let o = orig.get_pixel(x, y).0;
+        let b = blur.get_pixel(x, y).0;
+        let clamp = |v: f32| -> u8 { v.round().max(0.0).min(255.0) as u8 };
+        image::Rgba([
+            clamp(b[0] as f32 + (o[0] as f32 - b[0] as f32) * factor),
+            clamp(b[1] as f32 + (o[1] as f32 - b[1] as f32) * factor),
+            clamp(b[2] as f32 + (o[2] as f32 - b[2] as f32) * factor),
+            o[3],
+        ])
+    });
+    let img = match m {
+        "L" => DynamicImage::ImageLuma8(DynamicImage::from(out).to_luma8()),
+        "RGB" => DynamicImage::ImageRgb8(DynamicImage::from(out).to_rgb8()),
+        _ => DynamicImage::ImageRgba8(out),
+    };
+    ImageHandle { inner: img }
+}
+
+// ---------------------------------------------------------------------------
+// ImageOps
+// ---------------------------------------------------------------------------
+
+pub fn autocontrast(handle: &ImageHandle) -> ImageHandle {
+    let (w, h) = handle.inner.dimensions();
+    let m = mode(handle);
+    let hist = histogram(handle);
+    let num_ch = match m {
+        "L" => 1,
+        "LA" => 2,
+        "RGB" => 3,
+        _ => 4,
+    };
+
+    // Find min/max for each channel (skip alpha for stretching)
+    let stretch_ch = match m {
+        "LA" => 1,
+        "RGBA" => 3,
+        _ => num_ch,
+    };
+    let mut ch_min = vec![0u8; num_ch];
+    let mut ch_max = vec![255u8; num_ch];
+    for c in 0..stretch_ch {
+        for i in 0..256 {
+            if hist[c * 256 + i] > 0 {
+                ch_min[c] = i as u8;
+                break;
+            }
+        }
+        for i in (0..256).rev() {
+            if hist[c * 256 + i] > 0 {
+                ch_max[c] = i as u8;
+                break;
+            }
+        }
+    }
+
+    let rgba = handle.inner.to_rgba8();
+    let out = ImageBuffer::from_fn(w, h, |x, y| {
+        let p = rgba.get_pixel(x, y).0;
+        let stretch = |v: u8, lo: u8, hi: u8| -> u8 {
+            if hi <= lo {
+                return v;
+            }
+            ((v.max(lo) - lo) as f32 / (hi - lo) as f32 * 255.0)
+                .round()
+                .min(255.0) as u8
+        };
+        match m {
+            "L" => {
+                let v = stretch(p[0], ch_min[0], ch_max[0]);
+                image::Rgba([v, v, v, p[3]])
+            }
+            "RGB" => image::Rgba([
+                stretch(p[0], ch_min[0], ch_max[0]),
+                stretch(p[1], ch_min[1], ch_max[1]),
+                stretch(p[2], ch_min[2], ch_max[2]),
+                p[3],
+            ]),
+            _ => image::Rgba([
+                stretch(p[0], ch_min[0], ch_max[0]),
+                stretch(p[1], ch_min[1], ch_max[1]),
+                stretch(p[2], ch_min[2], ch_max[2]),
+                p[3],
+            ]),
+        }
+    });
+    let img = match m {
+        "L" => DynamicImage::ImageLuma8(DynamicImage::from(out).to_luma8()),
+        "RGB" => DynamicImage::ImageRgb8(DynamicImage::from(out).to_rgb8()),
+        _ => DynamicImage::ImageRgba8(out),
+    };
+    ImageHandle { inner: img }
+}
+
+pub fn invert_image(handle: &ImageHandle) -> ImageHandle {
+    let (w, h) = handle.inner.dimensions();
+    let m = mode(handle);
+    let rgba = handle.inner.to_rgba8();
+    let out = ImageBuffer::from_fn(w, h, |x, y| {
+        let p = rgba.get_pixel(x, y).0;
+        image::Rgba([255 - p[0], 255 - p[1], 255 - p[2], p[3]])
+    });
+    let img = match m {
+        "L" => DynamicImage::ImageLuma8(DynamicImage::from(out).to_luma8()),
+        "RGB" => DynamicImage::ImageRgb8(DynamicImage::from(out).to_rgb8()),
+        _ => DynamicImage::ImageRgba8(out),
+    };
+    ImageHandle { inner: img }
 }
 
 // ---------------------------------------------------------------------------
