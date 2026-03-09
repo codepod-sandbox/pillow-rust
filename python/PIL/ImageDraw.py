@@ -121,6 +121,83 @@ class ImageDraw:
         )
 
 
+    def textbbox(self, xy, text, font=None, anchor=None, **kwargs):
+        """Return bounding box (x0, y0, x1, y1) of text at position *xy*.
+
+        Uses built-in 8x16 monospace bitmap font metrics.
+        """
+        char_w, char_h = 8, 16
+        if font and hasattr(font, 'size'):
+            scale = 2 if font.size >= 16 else 1
+            char_w *= scale
+            char_h *= scale
+        lines = str(text).split("\n")
+        max_len = max(len(line) for line in lines) if lines else 0
+        text_w = max_len * char_w
+        text_h = len(lines) * char_h
+
+        x, y = int(xy[0]), int(xy[1])
+        anc = anchor or "left"
+        if anc == "center" or anc == "mm":
+            x -= text_w // 2
+            y -= text_h // 2
+        elif anc == "right" or anc == "rm":
+            x -= text_w
+
+        return (x, y, x + text_w, y + text_h)
+
+    def textlength(self, text, font=None, **kwargs):
+        """Return width of *text* in pixels."""
+        char_w = 8
+        if font and hasattr(font, 'size'):
+            char_w = 16 if font.size >= 16 else 8
+        return len(str(text)) * char_w
+
+    def multiline_text(self, xy, text, fill=None, font=None, anchor=None,
+                       spacing=4, align="left", **kwargs):
+        """Draw multi-line text, splitting on newlines."""
+        color = fill or (255, 255, 255)
+        if isinstance(color, int):
+            color = (color, color, color)
+        char_h = 16
+        if font and hasattr(font, 'size'):
+            char_h = 32 if font.size >= 16 else 16
+
+        x, y = int(xy[0]), int(xy[1])
+        for line in str(text).split("\n"):
+            self.text((x, y), line, fill=color, font=font, anchor=anchor)
+            y += char_h + spacing
+
+    def rounded_rectangle(self, xy, radius=0, fill=None, outline=None, width=1):
+        """Draw a rounded rectangle.
+
+        Falls back to a regular rectangle (radius is decorative only in our
+        bitmap implementation).
+        """
+        # For a bitmap implementation, we draw a regular rectangle and then
+        # round the corners by drawing arcs. Simplified: just draw the rect.
+        self.rectangle(xy, fill=fill, outline=outline, width=width)
+
+    def regular_polygon(self, bounding_circle, n_sides, rotation=0,
+                        fill=None, outline=None, width=1):
+        """Draw a regular polygon inscribed in *bounding_circle*.
+
+        *bounding_circle* is ``(cx, cy, r)`` or ``((cx, cy), r)``.
+        """
+        import math
+        if len(bounding_circle) == 2:
+            (cx, cy), r = bounding_circle
+        else:
+            cx, cy, r = bounding_circle
+        points = []
+        for i in range(n_sides):
+            angle = math.radians(rotation + i * 360 / n_sides - 90)
+            px = cx + r * math.cos(angle)
+            py = cy + r * math.sin(angle)
+            points.append((int(px), int(py)))
+        self.polygon(points, fill=fill, outline=outline, width=width)
+
+
 def Draw(im):
     """Factory function matching ``PIL.ImageDraw.Draw(im)``."""
     return ImageDraw(im)

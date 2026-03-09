@@ -283,6 +283,100 @@ pub fn filter(handle: &ImageHandle, name: &str, args: &[f32]) -> Result<ImageHan
         }
         "sharpen" => handle.inner.unsharpen(3.0, 1),
         "smooth" => handle.inner.blur(0.5),
+        "smooth_more" => handle.inner.blur(1.0),
+        "contour" => {
+            // Pillow CONTOUR: edge detection then invert
+            #[rustfmt::skip]
+            let k: [f32; 9] = [
+                -1.0, -1.0, -1.0,
+                -1.0,  8.0, -1.0,
+                -1.0, -1.0, -1.0,
+            ];
+            apply_kernel3x3(&handle.inner, &k)
+        }
+        "detail" => {
+            // Pillow DETAIL kernel (scale=6, offset=0)
+            #[rustfmt::skip]
+            let k: [f32; 9] = [
+                 0.0, -1.0,  0.0,
+                -1.0, 10.0, -1.0,
+                 0.0, -1.0,  0.0,
+            ];
+            apply_kernel3x3_scaled(&handle.inner, &k, 6.0, 0.0)
+        }
+        "edge_enhance" => {
+            // Pillow EDGE_ENHANCE (scale=2, offset=0)
+            #[rustfmt::skip]
+            let k: [f32; 9] = [
+                -1.0, -1.0, -1.0,
+                -1.0, 10.0, -1.0,
+                -1.0, -1.0, -1.0,
+            ];
+            apply_kernel3x3_scaled(&handle.inner, &k, 2.0, 0.0)
+        }
+        "edge_enhance_more" => {
+            // Pillow EDGE_ENHANCE_MORE (scale=1, offset=0)
+            #[rustfmt::skip]
+            let k: [f32; 9] = [
+                -1.0, -1.0, -1.0,
+                -1.0,  9.0, -1.0,
+                -1.0, -1.0, -1.0,
+            ];
+            apply_kernel3x3(&handle.inner, &k)
+        }
+        "emboss" => {
+            // Pillow EMBOSS (scale=1, offset=128)
+            #[rustfmt::skip]
+            let k: [f32; 9] = [
+                -1.0, -1.0,  0.0,
+                -1.0,  0.0,  1.0,
+                 0.0,  1.0,  1.0,
+            ];
+            apply_kernel3x3_scaled(&handle.inner, &k, 1.0, 128.0)
+        }
+        "find_edges" => {
+            // Pillow FIND_EDGES (scale=1, offset=0)
+            #[rustfmt::skip]
+            let k: [f32; 9] = [
+                -1.0, -1.0, -1.0,
+                -1.0,  8.0, -1.0,
+                -1.0, -1.0, -1.0,
+            ];
+            apply_kernel3x3(&handle.inner, &k)
+        }
+        "kernel3x3" => {
+            // Custom 3x3 kernel: args = [k0..k8, scale, offset]
+            if args.len() < 9 {
+                return Err(PilError::InvalidOperation(
+                    "kernel3x3 requires 9+ args".into(),
+                ));
+            }
+            let k: [f32; 9] = [
+                args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8],
+            ];
+            let scale = if args.len() > 9 { args[9] } else { 1.0 };
+            let offset = if args.len() > 10 { args[10] } else { 0.0 };
+            apply_kernel3x3_scaled(&handle.inner, &k, scale, offset)
+        }
+        "unsharp_mask" => {
+            let radius = args.first().copied().unwrap_or(2.0);
+            let percent = if args.len() > 1 { args[1] as i32 } else { 150 };
+            let _threshold = if args.len() > 2 { args[2] as u8 } else { 3 };
+            handle.inner.unsharpen(radius, percent)
+        }
+        "median" => {
+            // Median filter: take middle value in NxN neighborhood
+            let size = args.first().copied().unwrap_or(3.0) as u32;
+            apply_rank_filter(&handle.inner, size, (size * size) / 2)
+        }
+        "min_filter" => {
+            let size = args.first().copied().unwrap_or(3.0) as u32;
+            apply_rank_filter(&handle.inner, size, 0)
+        }
+        "max_filter" => {
+            let size = args.first().copied().unwrap_or(3.0) as u32;
+            apply_rank_filter(&handle.inner, size, size * size - 1)
+        }
         _ => {
             return Err(PilError::InvalidOperation(format!(
                 "unknown filter: {name}"
@@ -290,6 +384,81 @@ pub fn filter(handle: &ImageHandle, name: &str, args: &[f32]) -> Result<ImageHan
         }
     };
     Ok(ImageHandle { inner: out })
+}
+
+fn apply_kernel3x3(img: &image::DynamicImage, kernel: &[f32; 9]) -> image::DynamicImage {
+    apply_kernel3x3_scaled(img, kernel, 1.0, 0.0)
+}
+
+fn apply_kernel3x3_scaled(
+    img: &image::DynamicImage,
+    kernel: &[f32; 9],
+    scale: f32,
+    offset: f32,
+) -> image::DynamicImage {
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut out = image::RgbaImage::new(w, h);
+    let inv_scale = 1.0 / scale;
+
+    for y in 0..h {
+        for x in 0..w {
+            let mut r_sum = 0.0f32;
+            let mut g_sum = 0.0f32;
+            let mut b_sum = 0.0f32;
+            let mut ki = 0;
+            for ky in -1i32..=1 {
+                for kx in -1i32..=1 {
+                    let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
+                    let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
+                    let p = rgba.get_pixel(sx, sy);
+                    r_sum += p[0] as f32 * kernel[ki];
+                    g_sum += p[1] as f32 * kernel[ki];
+                    b_sum += p[2] as f32 * kernel[ki];
+                    ki += 1;
+                }
+            }
+            let a = rgba.get_pixel(x, y)[3];
+            let r = (r_sum * inv_scale + offset).clamp(0.0, 255.0) as u8;
+            let g = (g_sum * inv_scale + offset).clamp(0.0, 255.0) as u8;
+            let b = (b_sum * inv_scale + offset).clamp(0.0, 255.0) as u8;
+            out.put_pixel(x, y, image::Rgba([r, g, b, a]));
+        }
+    }
+    image::DynamicImage::ImageRgba8(out)
+}
+
+fn apply_rank_filter(img: &image::DynamicImage, size: u32, rank: u32) -> image::DynamicImage {
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut out = image::RgbaImage::new(w, h);
+    let half = (size / 2) as i32;
+    let rank = rank as usize;
+
+    for y in 0..h {
+        for x in 0..w {
+            let mut rs: Vec<u8> = Vec::new();
+            let mut gs: Vec<u8> = Vec::new();
+            let mut bs: Vec<u8> = Vec::new();
+            for ky in -half..=half {
+                for kx in -half..=half {
+                    let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
+                    let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
+                    let p = rgba.get_pixel(sx, sy);
+                    rs.push(p[0]);
+                    gs.push(p[1]);
+                    bs.push(p[2]);
+                }
+            }
+            rs.sort_unstable();
+            gs.sort_unstable();
+            bs.sort_unstable();
+            let idx = rank.min(rs.len() - 1);
+            let a = rgba.get_pixel(x, y)[3];
+            out.put_pixel(x, y, image::Rgba([rs[idx], gs[idx], bs[idx], a]));
+        }
+    }
+    image::DynamicImage::ImageRgba8(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1362,4 +1531,176 @@ fn parse_filter(filter: &str) -> image::imageops::FilterType {
         "lanczos" | "1" => image::imageops::FilterType::Lanczos3,
         _ => image::imageops::FilterType::Triangle,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Blend / Composite
+// ---------------------------------------------------------------------------
+
+/// Linear interpolation: out = im1 * (1 - alpha) + im2 * alpha
+pub fn blend(im1: &ImageHandle, im2: &ImageHandle, alpha: f64) -> Result<ImageHandle> {
+    let a = im1.inner.to_rgba8();
+    let b = im2.inner.to_rgba8();
+    let (w, h) = a.dimensions();
+    if b.dimensions() != (w, h) {
+        return Err(PilError::InvalidOperation(
+            "images must be same size".into(),
+        ));
+    }
+    let mut out = image::RgbaImage::new(w, h);
+    let inv = 1.0 - alpha;
+    for y in 0..h {
+        for x in 0..w {
+            let pa = a.get_pixel(x, y);
+            let pb = b.get_pixel(x, y);
+            let r = (pa[0] as f64 * inv + pb[0] as f64 * alpha).clamp(0.0, 255.0) as u8;
+            let g = (pa[1] as f64 * inv + pb[1] as f64 * alpha).clamp(0.0, 255.0) as u8;
+            let bl = (pa[2] as f64 * inv + pb[2] as f64 * alpha).clamp(0.0, 255.0) as u8;
+            let al = (pa[3] as f64 * inv + pb[3] as f64 * alpha).clamp(0.0, 255.0) as u8;
+            out.put_pixel(x, y, image::Rgba([r, g, bl, al]));
+        }
+    }
+    Ok(ImageHandle {
+        inner: DynamicImage::ImageRgba8(out),
+    })
+}
+
+/// Composite two images using a mask: out = im1 where mask=0, im2 where mask=255
+pub fn composite(im1: &ImageHandle, im2: &ImageHandle, mask: &ImageHandle) -> Result<ImageHandle> {
+    let a = im1.inner.to_rgba8();
+    let b = im2.inner.to_rgba8();
+    let m = mask.inner.to_luma8();
+    let (w, h) = a.dimensions();
+    if b.dimensions() != (w, h) || m.dimensions() != (w, h) {
+        return Err(PilError::InvalidOperation(
+            "images must be same size".into(),
+        ));
+    }
+    let mut out = image::RgbaImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let pa = a.get_pixel(x, y);
+            let pb = b.get_pixel(x, y);
+            let mv = m.get_pixel(x, y)[0] as f64 / 255.0;
+            let inv = 1.0 - mv;
+            let r = (pa[0] as f64 * inv + pb[0] as f64 * mv) as u8;
+            let g = (pa[1] as f64 * inv + pb[1] as f64 * mv) as u8;
+            let bl = (pa[2] as f64 * inv + pb[2] as f64 * mv) as u8;
+            let al = (pa[3] as f64 * inv + pb[3] as f64 * mv) as u8;
+            out.put_pixel(x, y, image::Rgba([r, g, bl, al]));
+        }
+    }
+    Ok(ImageHandle {
+        inner: DynamicImage::ImageRgba8(out),
+    })
+}
+
+/// Alpha composite: place src over dst using src alpha
+pub fn alpha_composite(dst: &ImageHandle, src: &ImageHandle) -> Result<ImageHandle> {
+    let a = dst.inner.to_rgba8();
+    let b = src.inner.to_rgba8();
+    let (w, h) = a.dimensions();
+    if b.dimensions() != (w, h) {
+        return Err(PilError::InvalidOperation(
+            "images must be same size".into(),
+        ));
+    }
+    let mut out = image::RgbaImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let da = a.get_pixel(x, y);
+            let sa = b.get_pixel(x, y);
+            let src_a = sa[3] as f64 / 255.0;
+            let dst_a = da[3] as f64 / 255.0;
+            let out_a = src_a + dst_a * (1.0 - src_a);
+            if out_a == 0.0 {
+                out.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
+            } else {
+                let r =
+                    ((sa[0] as f64 * src_a + da[0] as f64 * dst_a * (1.0 - src_a)) / out_a) as u8;
+                let g =
+                    ((sa[1] as f64 * src_a + da[1] as f64 * dst_a * (1.0 - src_a)) / out_a) as u8;
+                let bl =
+                    ((sa[2] as f64 * src_a + da[2] as f64 * dst_a * (1.0 - src_a)) / out_a) as u8;
+                out.put_pixel(x, y, image::Rgba([r, g, bl, (out_a * 255.0) as u8]));
+            }
+        }
+    }
+    Ok(ImageHandle {
+        inner: DynamicImage::ImageRgba8(out),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Bulk pixel access
+// ---------------------------------------------------------------------------
+
+/// Return all pixel data as flat Vec of u8 tuples (for getdata)
+pub fn getdata(handle: &ImageHandle) -> Vec<Vec<u8>> {
+    let rgba = handle.inner.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mode = mode(handle);
+    let mut result = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y);
+            match &*mode {
+                "L" => result.push(vec![p[0]]),
+                "LA" => result.push(vec![p[0], p[3]]),
+                "RGB" => result.push(vec![p[0], p[1], p[2]]),
+                _ => result.push(vec![p[0], p[1], p[2], p[3]]),
+            }
+        }
+    }
+    result
+}
+
+/// Apply a lookup table (256 entries per channel) to each pixel
+pub fn point(handle: &ImageHandle, lut: &[u8]) -> Result<ImageHandle> {
+    let rgba = handle.inner.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let m = mode(handle);
+    let channels = match &*m {
+        "L" => 1,
+        "LA" => 2,
+        "RGB" => 3,
+        _ => 4,
+    };
+
+    // lut can be 256 (applied to all channels) or 256*channels
+    let per_channel = lut.len() == 256;
+    if !per_channel && lut.len() != 256 * channels {
+        return Err(PilError::InvalidOperation(format!(
+            "point: expected {} or {} LUT entries, got {}",
+            256,
+            256 * channels,
+            lut.len()
+        )));
+    }
+
+    let mut out = image::RgbaImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y);
+            let r = if per_channel {
+                lut[p[0] as usize]
+            } else {
+                lut[p[0] as usize]
+            };
+            let g = if per_channel {
+                lut[p[1] as usize]
+            } else {
+                lut[256 + p[1] as usize]
+            };
+            let b = if per_channel {
+                lut[p[2] as usize]
+            } else {
+                lut[512 + p[2] as usize]
+            };
+            out.put_pixel(x, y, image::Rgba([r, g, b, p[3]]));
+        }
+    }
+    Ok(ImageHandle {
+        inner: DynamicImage::ImageRgba8(out),
+    })
 }

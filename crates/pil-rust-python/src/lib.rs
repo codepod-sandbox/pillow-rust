@@ -610,6 +610,110 @@ pub mod _pil_native {
             .map_err(|e| vm.new_value_error(e))
     }
 
+    // -- Blend / Composite -------------------------------------------------
+
+    #[pyfunction]
+    fn image_blend(id1: usize, id2: usize, alpha: f64, vm: &VirtualMachine) -> PyResult<usize> {
+        let (h1, h2) = IMAGES.with(|m| {
+            let map = m.borrow();
+            let a = map
+                .get(&id1)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {id1}")))?
+                .clone();
+            let b = map
+                .get(&id2)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {id2}")))?
+                .clone();
+            Ok((a, b))
+        })?;
+        pil_rust_core::blend(&h1, &h2, alpha)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn image_composite(
+        id1: usize,
+        id2: usize,
+        mask_id: usize,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        let (h1, h2, hm) = IMAGES.with(|m| {
+            let map = m.borrow();
+            let a = map
+                .get(&id1)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {id1}")))?
+                .clone();
+            let b = map
+                .get(&id2)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {id2}")))?
+                .clone();
+            let mask = map
+                .get(&mask_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {mask_id}")))?
+                .clone();
+            Ok((a, b, mask))
+        })?;
+        pil_rust_core::composite(&h1, &h2, &hm)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn image_alpha_composite(dst_id: usize, src_id: usize, vm: &VirtualMachine) -> PyResult<usize> {
+        let (dst, src) = IMAGES.with(|m| {
+            let map = m.borrow();
+            let a = map
+                .get(&dst_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {dst_id}")))?
+                .clone();
+            let b = map
+                .get(&src_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {src_id}")))?
+                .clone();
+            Ok((a, b))
+        })?;
+        pil_rust_core::alpha_composite(&dst, &src)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    // -- Bulk pixel access -------------------------------------------------
+
+    #[pyfunction]
+    fn image_getdata(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let data =
+            with(handle_id, |h| pil_rust_core::getdata(h)).map_err(|e| vm.new_value_error(e))?;
+        let items: Vec<PyObjectRef> = data
+            .into_iter()
+            .map(|pixel| {
+                if pixel.len() == 1 {
+                    vm.ctx.new_int(pixel[0] as i32).into()
+                } else {
+                    let elems: Vec<PyObjectRef> = pixel
+                        .iter()
+                        .map(|&v| vm.ctx.new_int(v as i32).into())
+                        .collect();
+                    vm.ctx.new_tuple(elems).into()
+                }
+            })
+            .collect();
+        Ok(vm.ctx.new_list(items).into())
+    }
+
+    #[pyfunction]
+    fn image_point(handle_id: usize, lut: Vec<u8>, vm: &VirtualMachine) -> PyResult<usize> {
+        let handle = IMAGES.with(|m| {
+            let map = m.borrow();
+            map.get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))
+                .cloned()
+        })?;
+        pil_rust_core::point(&handle, &lut)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
     // -- Helpers -----------------------------------------------------------
 
     /// Extract a color from a Python object (int, tuple, or list) into bytes.

@@ -19,6 +19,10 @@ test_files = [
     "test_image_filter",
     "test_imagedraw",
     "test_new_features",
+    "test_imagecolor",
+    "test_imagestat",
+    "test_imagefilter_extra",
+    "test_composition",
 ]
 
 total_pass = 0

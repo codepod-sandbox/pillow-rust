@@ -180,6 +180,44 @@ class Image:
             _pil_native.image_close(self._handle)
             self._handle = None
 
+    # -- bulk pixel access --------------------------------------------------
+
+    def getdata(self):
+        """Return contents as a flat list of pixel values."""
+        return _pil_native.image_getdata(self._handle)
+
+    def putdata(self, data):
+        """Replace image data from a flat sequence of pixel values."""
+        w, h = self.size
+        m = self.mode
+        if m == "L":
+            for i, v in enumerate(data):
+                x, y = i % w, i // w
+                if y < h:
+                    val = v if isinstance(v, int) else v[0]
+                    _pil_native.image_putpixel(self._handle, x, y, [val])
+        else:
+            for i, v in enumerate(data):
+                x, y = i % w, i // w
+                if y < h:
+                    _pil_native.image_putpixel(self._handle, x, y, list(v))
+
+    def point(self, lut, mode=None):
+        """Apply a lookup table to each pixel. *lut* is a list of 256 values."""
+        if callable(lut):
+            lut = [lut(i) for i in range(256)]
+        out = Image(_pil_native.image_point(self._handle, [int(v) & 0xFF for v in lut]))
+        target_mode = mode or self.mode
+        if out.mode != target_mode:
+            out = out.convert(target_mode)
+        return out
+
+    # -- compositing -------------------------------------------------------
+
+    def alpha_composite(self, im, dest=(0, 0), source=(0, 0)):
+        """Alpha composite *im* over this image."""
+        return Image(_pil_native.image_alpha_composite(self._handle, im._handle))
+
     # -- filter -------------------------------------------------------------
 
     def filter(self, f):
@@ -271,3 +309,19 @@ def merge(mode, bands):
     """Merge individual L-mode band images into a multi-channel image."""
     ids = [b._handle for b in bands]
     return Image(_pil_native.image_merge(mode, ids))
+
+
+def blend(im1, im2, alpha):
+    """Linear interpolation: out = im1 * (1 - alpha) + im2 * alpha."""
+    out = Image(_pil_native.image_blend(im1._handle, im2._handle, float(alpha)))
+    if im1.mode != "RGBA":
+        out = out.convert(im1.mode)
+    return out
+
+
+def composite(im1, im2, mask):
+    """Composite two images using a mask."""
+    out = Image(_pil_native.image_composite(im1._handle, im2._handle, mask._handle))
+    if im1.mode != "RGBA":
+        out = out.convert(im1.mode)
+    return out
