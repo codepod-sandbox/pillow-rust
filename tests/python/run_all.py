@@ -31,6 +31,7 @@ test_files = [
     "test_save_options",
     "test_imagefont",
     "test_imagedraw_extra",
+    "test_mode1_draw",
 ]
 
 total_pass = 0

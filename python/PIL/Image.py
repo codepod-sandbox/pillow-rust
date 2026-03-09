@@ -152,7 +152,11 @@ class Image:
         return Image(_pil_native.image_transpose(self._handle, method))
 
     def convert(self, mode, **_kw):
-        """Return a copy converted to the given mode ('RGB', 'L', etc.)."""
+        """Return a copy converted to the given mode ('RGB', 'L', 'LA', 'RGBA', '1')."""
+        if mode == "1":
+            # Binary mode: threshold at 128
+            gray = self if self.mode == "L" else Image(_pil_native.image_convert(self._handle, "L"))
+            return gray.point(lambda x: 255 if x >= 128 else 0)
         return Image(_pil_native.image_convert(self._handle, mode))
 
     def transform(self, size, method, data=None, resample=0, fill=1, fillcolor=None):

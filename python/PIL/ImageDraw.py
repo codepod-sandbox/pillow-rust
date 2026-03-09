@@ -75,6 +75,22 @@ class ImageDraw:
                 self._image._handle, list(coords), list(color), False
             )
 
+    def point(self, xy, fill=None):
+        """Draw one or more individual pixels.
+
+        *xy* is a flat list ``[x0, y0, x1, y1, ...]`` or list of tuples
+        ``[(x0, y0), (x1, y1), ...]``.
+        """
+        color = fill or (255, 255, 255)
+        if isinstance(color, int):
+            color = (color,)
+        elif isinstance(color, tuple):
+            color = list(color)
+        coords = _normalise_xy(xy)
+        for i in range(0, len(coords), 2):
+            x, y = int(coords[i]), int(coords[i + 1])
+            _pil_native.image_putpixel(self._image._handle, x, y, list(color))
+
     def arc(self, xy, start, end, fill=None, width=1):
         """Draw an arc (portion of ellipse outline).
 
@@ -101,6 +117,13 @@ class ImageDraw:
             self._image._handle, list(coords), float(start), float(end),
             list(color), fill is not None
         )
+
+    def chord(self, xy, start, end, fill=None, outline=None, width=1):
+        """Draw a chord (filled arc with a straight line closing the endpoints).
+
+        Falls back to pieslice since we don't have a separate native chord.
+        """
+        self.pieslice(xy, start, end, fill=fill, outline=outline, width=width)
 
     def text(self, xy, text, fill=None, font=None, anchor=None):
         """Draw text at the given position.
@@ -152,6 +175,20 @@ class ImageDraw:
         if font and hasattr(font, 'size'):
             char_w = 16 if font.size >= 16 else 8
         return len(str(text)) * char_w
+
+    def multiline_textbbox(self, xy, text, font=None, spacing=4, **kwargs):
+        """Return bounding box of multi-line text."""
+        char_w, char_h = 8, 16
+        if font and hasattr(font, 'size'):
+            scale = 2 if font.size >= 16 else 1
+            char_w *= scale
+            char_h *= scale
+        lines = str(text).split("\n")
+        max_len = max(len(line) for line in lines) if lines else 0
+        text_w = max_len * char_w
+        text_h = len(lines) * char_h + (len(lines) - 1) * spacing if lines else 0
+        x, y = int(xy[0]), int(xy[1])
+        return (x, y, x + text_w, y + text_h)
 
     def multiline_text(self, xy, text, fill=None, font=None, anchor=None,
                        spacing=4, align="left", **kwargs):

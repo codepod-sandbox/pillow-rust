@@ -97,6 +97,9 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 | `draw.multiline_text(xy, text, fill, font, spacing)` | Done | splits on newlines |
 | `draw.rounded_rectangle(xy, radius, fill, outline)` | Done | falls back to rectangle |
 | `draw.regular_polygon(bounding_circle, n_sides, fill)` | Done | |
+| `draw.point(xy, fill)` | Done | individual pixels |
+| `draw.chord(xy, start, end, fill)` | Done | falls back to pieslice |
+| `draw.multiline_textbbox(xy, text, font)` | Done | bounding box for multiline |
 
 ### PIL.ImageFilter
 
@@ -237,7 +240,7 @@ Less common but occasionally used.
 | Feature | Status | Notes |
 |---------|--------|-------|
 | `P` (palette) | TODO | indexed color |
-| `1` (1-bit) | TODO | binary |
+| ~~`1` (1-bit)~~ | Done | via convert("1"), threshold at 128 |
 | `I` (32-bit signed int) | TODO | |
 | `F` (32-bit float) | TODO | |
 | `CMYK` | TODO | |
