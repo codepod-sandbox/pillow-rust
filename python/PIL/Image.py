@@ -179,7 +179,26 @@ class Image:
         """Return a cropped copy. *box* is (left, upper, right, lower)."""
         if box is None:
             return self.copy()
-        return Image(_pil_native.image_crop(self._handle, list(box)))
+        x0, y0, x1, y1 = box
+        w, h = self.size
+        # If box is fully within bounds, fast path
+        if x0 >= 0 and y0 >= 0 and x1 <= w and y1 <= h and x1 >= x0 and y1 >= y0:
+            return Image(_pil_native.image_crop(self._handle, [x0, y0, x1, y1]))
+        # Wide crop: create output filled with black, paste valid region
+        out_w = max(0, x1 - x0)
+        out_h = max(0, y1 - y0)
+        out = new(self.mode, (out_w, out_h), 0)
+        if out_w == 0 or out_h == 0:
+            return out
+        src_x0 = max(0, x0)
+        src_y0 = max(0, y0)
+        src_x1 = min(w, x1)
+        src_y1 = min(h, y1)
+        if src_x0 >= src_x1 or src_y0 >= src_y1:
+            return out
+        piece = Image(_pil_native.image_crop(self._handle, [src_x0, src_y0, src_x1, src_y1]))
+        _pil_native.image_paste(out._handle, piece._handle, src_x0 - x0, src_y0 - y0)
+        return out
 
     def rotate(self, angle, resample=None, expand=False, **_kw):
         """Return a rotated copy (counter-clockwise, in degrees)."""

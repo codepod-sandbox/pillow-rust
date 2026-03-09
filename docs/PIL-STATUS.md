@@ -6,7 +6,7 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 
 **Supported modes:** L, LA, RGB, RGBA
 
-**Tests:** 173+ passing across 14 test files
+**Tests:** 173+ passing across 14 test files + 47/50 upstream compat tests passing
 
 ---
 
@@ -16,7 +16,7 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `Image.new(mode, size, color)` | Done | L, LA, RGB, RGBA |
+| `Image.new(mode, size, color)` | Done | L, LA, RGB, RGBA; string color names |
 | `Image.open(fp)` | Done | filename or file-like |
 | `Image.frombytes(mode, size, data)` | Done | |
 | `Image.fromarray(obj, mode)` | Done | numpy-like arrays |
@@ -26,12 +26,12 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 | `image.close()` | Done | context manager supported |
 | `image.convert(mode)` | Done | between L/LA/RGB/RGBA |
 | `image.resize(size, resample)` | Done | nearest/bilinear/bicubic/lanczos |
-| `image.crop(box)` | Done | |
+| `image.crop(box)` | Done | wide crop (negative/out-of-bounds coords) |
 | `image.rotate(angle, expand)` | Done | counter-clockwise, nearest for arbitrary angles |
 | `image.transpose(method)` | Done | all 7 methods |
 | `image.thumbnail(size)` | Done | in-place, never upsizes |
 | `image.filter(f)` | Done | see ImageFilter |
-| `image.paste(im, box, mask)` | Done | alpha blending with mask |
+| `image.paste(im, box, mask)` | Done | alpha blending with mask; color fill support |
 | `image.split()` | Done | returns L-mode channels |
 | `image.tobytes()` | Done | |
 | `image.getpixel(xy)` | Done | |
@@ -172,8 +172,8 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `getrgb(color)` | Done | named, hex (#RGB/#RRGGBB/#RRGGBBAA), rgb(), rgba(), hsl() |
-| `getcolor(color, mode)` | Done | converts to L/RGB/RGBA |
+| `getrgb(color)` | Done | named, hex (#RGB/#RRGGBB/#RRGGBBAA), rgb(), rgba(), hsl(), hsv()/hsb() |
+| `getcolor(color, mode)` | Done | converts to 1/L/LA/RGB/RGBA/HSV; BT.709 luma |
 | `colormap` | Done | 148 CSS named colors |
 
 ### PIL.ImageChops

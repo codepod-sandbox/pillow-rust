@@ -247,7 +247,11 @@ def _parse_rgb(color, original):
         for i in range(3):
             if i >= len(parts):
                 break
-            if not parts[i].endswith("%"):
+            p = parts[i]
+            if not p.endswith("%"):
+                raise ValueError("unknown color specifier: %r" % original)
+            # Reject space before %: "0 %" is invalid
+            if len(p) > 1 and p[-2] == " ":
                 raise ValueError("unknown color specifier: %r" % original)
         values = []
         for i in range(3):
@@ -409,12 +413,12 @@ def getcolor(color, mode):
     """
     rgb = getrgb(color)
     if mode == "L" or mode == "1":
-        # ITU-R 601-2 luma
+        # BT.709 luma (matches our Rust image crate convert)
         r, g, b = rgb[0], rgb[1], rgb[2]
-        return int(0.299 * r + 0.587 * g + 0.114 * b + 0.5)
+        return int(0.2126 * r + 0.7152 * g + 0.0722 * b + 0.5)
     if mode == "LA":
         r, g, b = rgb[0], rgb[1], rgb[2]
-        l = int(0.299 * r + 0.587 * g + 0.114 * b + 0.5)
+        l = int(0.2126 * r + 0.7152 * g + 0.0722 * b + 0.5)
         a = rgb[3] if len(rgb) == 4 else 255
         return (l, a)
     if mode == "RGB":
@@ -438,6 +442,6 @@ def getcolor(color, mode):
             h = 2.0 + (b - r) / diff
         else:
             h = 4.0 + (r - g) / diff
-        h = int((h / 6.0) * 256 + 0.5) % 256
+        h = int((h / 6.0) * 255 + 0.5) % 256
         return (h, s, v)
     return rgb

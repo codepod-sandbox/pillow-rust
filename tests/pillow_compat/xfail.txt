@@ -5,23 +5,11 @@
 # Format: module.test_name or module.ClassName.method_name
 
 # --- test_imagecolor ---
-# Our getrgb doesn't support all upstream function formats yet
-test_imagecolor.test_functions
+# test_rounding_errors: upstream hardcodes BT.601 luma values, our Rust uses BT.709
 test_imagecolor.test_rounding_errors
-test_imagecolor.test_color_hsv
 
 # --- test_imagestat ---
 # test_hopper checks exact pixel sums from upstream's hopper.ppm — our synthetic hopper differs
 test_imagestat.test_hopper
 # test_sanity creates Stat from histogram list and uses mode "1" mask
 test_imagestat.test_sanity
-
-# --- test_image_crop ---
-# wide_crop with negative coordinates may not match upstream behavior
-test_image_crop.test_wide_crop
-# zero-size crop edge cases
-test_image_crop.test_crop_zero
-
-# --- test_imagepath ---
-# compact() return value: we return points removed count differently than upstream
-test_imagepath.test_path

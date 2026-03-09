@@ -39,10 +39,12 @@ class Path:
         return (min(xs), min(ys), max(xs), max(ys))
 
     def compact(self, distance=2):
-        """Remove points closer than *distance* to each other."""
+        """Remove points closer than *distance* to each other.
+        Returns the number of points removed."""
         if len(self._coords) < 2:
-            return len(self._coords)
+            return 0
         d2 = distance * distance
+        original_len = len(self._coords)
         result = [self._coords[0]]
         for p in self._coords[1:]:
             dx = p[0] - result[-1][0]
@@ -50,7 +52,7 @@ class Path:
             if dx * dx + dy * dy >= d2:
                 result.append(p)
         self._coords = result
-        return len(self._coords)
+        return original_len - len(self._coords)
 
     def map(self, func):
         """Apply *func* to each point."""
