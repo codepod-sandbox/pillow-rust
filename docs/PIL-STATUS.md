@@ -110,6 +110,13 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 | `cover(image, size)` | Done | |
 | `fit(image, size)` | Done | alias for cover |
 | `scale(image, factor)` | Done | |
+| `equalize(image)` | Done | histogram equalization |
+| `solarize(image, threshold)` | Done | invert above threshold |
+| `posterize(image, bits)` | Done | reduce bits per channel |
+| `expand(image, border, fill)` | Done | add border frame |
+| `crop(image, border)` | Done | remove border frame |
+| `colorize(image, black, white)` | Done | colorize grayscale, supports mid color |
+| `exif_transpose(image)` | Done | no-op (no EXIF support) |
 
 ### PIL.ImageStat
 
@@ -161,15 +168,7 @@ Features LLMs commonly generate code with.
 
 ### ~~ImageDraw additions~~ — moved to Implemented
 
-### ImageDraw additions
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| `draw.textbbox(xy, text, font)` | TODO | measure text bounds |
-| `draw.textlength(text, font)` | TODO | measure text width |
-| `draw.multiline_text(xy, text, fill, font)` | TODO | |
-| `draw.rounded_rectangle(xy, radius, fill, outline)` | TODO | |
-| `draw.regular_polygon(bounding_circle, n_sides, fill)` | TODO | |
+### ~~ImageDraw additions~~ — moved to Implemented
 
 ---
 
@@ -210,17 +209,7 @@ Less common but occasionally used.
 | PNG `optimize=` | TODO | |
 | Format-specific params | TODO | |
 
-### ImageOps additions
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| `equalize(image)` | TODO | histogram equalization |
-| `solarize(image, threshold)` | TODO | |
-| `posterize(image, bits)` | TODO | |
-| `expand(image, border, fill)` | TODO | add border |
-| `colorize(image, black, white)` | TODO | colorize grayscale |
-| `crop(image, border)` | TODO | remove border |
-| `exif_transpose(image)` | TODO | orient by EXIF |
+### ~~ImageOps additions~~ — moved to Implemented
 
 ---
 
