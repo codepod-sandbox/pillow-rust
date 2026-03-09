@@ -1722,3 +1722,166 @@ pub fn point(handle: &ImageHandle, lut: &[u8]) -> Result<ImageHandle> {
         inner: DynamicImage::ImageRgba8(out),
     })
 }
+
+// ---------------------------------------------------------------------------
+// Quantize — median-cut color reduction
+// ---------------------------------------------------------------------------
+
+/// Reduce the number of distinct colors in the image.
+/// Returns an RGB image with at most `colors` distinct colors.
+pub fn quantize(handle: &ImageHandle, max_colors: usize) -> Result<ImageHandle> {
+    let rgba = handle.inner.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let max_colors = max_colors.max(1).min(256);
+
+    // Collect all pixel RGB values
+    let mut pixels: Vec<[u8; 3]> = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y);
+            pixels.push([p[0], p[1], p[2]]);
+        }
+    }
+
+    // Median-cut quantization
+    let palette = median_cut(&pixels, max_colors);
+
+    // Map each pixel to nearest palette color
+    let mut out = ImageBuffer::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y);
+            let rgb = [p[0], p[1], p[2]];
+            let nearest = find_nearest(&palette, &rgb);
+            out.put_pixel(x, y, image::Rgb(nearest));
+        }
+    }
+
+    Ok(ImageHandle {
+        inner: DynamicImage::ImageRgb8(out),
+    })
+}
+
+fn median_cut(pixels: &[[u8; 3]], max_colors: usize) -> Vec<[u8; 3]> {
+    if pixels.is_empty() {
+        return vec![[0, 0, 0]];
+    }
+
+    let mut buckets: Vec<Vec<[u8; 3]>> = vec![pixels.to_vec()];
+
+    while buckets.len() < max_colors {
+        // Find bucket with widest range
+        let mut best_idx = 0;
+        let mut best_range = 0u16;
+        for (i, bucket) in buckets.iter().enumerate() {
+            if bucket.len() < 2 {
+                continue;
+            }
+            for ch in 0..3 {
+                let mn = bucket.iter().map(|p| p[ch]).min().unwrap_or(0);
+                let mx = bucket.iter().map(|p| p[ch]).max().unwrap_or(0);
+                let range = (mx as u16) - (mn as u16);
+                if range > best_range {
+                    best_range = range;
+                    best_idx = i;
+                }
+            }
+        }
+
+        if best_range == 0 {
+            break;
+        }
+
+        let bucket = &buckets[best_idx];
+        let mut split_ch = 0;
+        let mut split_range = 0u16;
+        for ch in 0..3 {
+            let mn = bucket.iter().map(|p| p[ch]).min().unwrap_or(0);
+            let mx = bucket.iter().map(|p| p[ch]).max().unwrap_or(0);
+            let r = (mx as u16) - (mn as u16);
+            if r > split_range {
+                split_range = r;
+                split_ch = ch;
+            }
+        }
+
+        let mut sorted = buckets.swap_remove(best_idx);
+        sorted.sort_by_key(|p| p[split_ch]);
+        let mid = sorted.len() / 2;
+        let right = sorted.split_off(mid);
+        buckets.push(sorted);
+        buckets.push(right);
+    }
+
+    buckets
+        .iter()
+        .map(|bucket| {
+            if bucket.is_empty() {
+                return [0, 0, 0];
+            }
+            let (mut sr, mut sg, mut sb) = (0u64, 0u64, 0u64);
+            for p in bucket {
+                sr += p[0] as u64;
+                sg += p[1] as u64;
+                sb += p[2] as u64;
+            }
+            let n = bucket.len() as u64;
+            [(sr / n) as u8, (sg / n) as u8, (sb / n) as u8]
+        })
+        .collect()
+}
+
+fn find_nearest(palette: &[[u8; 3]], pixel: &[u8; 3]) -> [u8; 3] {
+    let mut best = palette[0];
+    let mut best_dist = u32::MAX;
+    for &c in palette {
+        let dr = c[0] as i32 - pixel[0] as i32;
+        let dg = c[1] as i32 - pixel[1] as i32;
+        let db = c[2] as i32 - pixel[2] as i32;
+        let d = (dr * dr + dg * dg + db * db) as u32;
+        if d < best_dist {
+            best_dist = d;
+            best = c;
+            if d == 0 {
+                break;
+            }
+        }
+    }
+    best
+}
+
+// ---------------------------------------------------------------------------
+// getcolors — return list of (count, color) tuples
+// ---------------------------------------------------------------------------
+
+pub fn getcolors(handle: &ImageHandle, maxcolors: usize) -> Option<Vec<(u32, [u8; 4])>> {
+    let rgba = handle.inner.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let m = mode(handle);
+    let channels = match m {
+        "L" => 1,
+        "LA" => 2,
+        "RGB" => 3,
+        _ => 4,
+    };
+
+    let mut counts: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y);
+            let key = match channels {
+                1 => [p[0], 0, 0, 0],
+                2 => [p[0], p[3], 0, 0],
+                3 => [p[0], p[1], p[2], 0],
+                _ => [p[0], p[1], p[2], p[3]],
+            };
+            *counts.entry(key).or_insert(0) += 1;
+            if counts.len() > maxcolors {
+                return None;
+            }
+        }
+    }
+    let mut result: Vec<(u32, [u8; 4])> = counts.into_iter().map(|(k, v)| (v, k)).collect();
+    result.sort_by(|a, b| b.0.cmp(&a.0));
+    Some(result)
+}

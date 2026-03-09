@@ -728,6 +728,65 @@ pub mod _pil_native {
             .map_err(|e| vm.new_value_error(e.to_string()))
     }
 
+    // -- Quantize / getcolors -----------------------------------------------
+
+    #[pyfunction]
+    fn image_quantize(handle_id: usize, colors: usize, vm: &VirtualMachine) -> PyResult<usize> {
+        let handle = IMAGES.with(|m| {
+            let map = m.borrow();
+            map.get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))
+                .cloned()
+        })?;
+        pil_rust_core::quantize(&handle, colors)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn image_getcolors(
+        handle_id: usize,
+        maxcolors: usize,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyObjectRef> {
+        let (result, img_mode) = IMAGES.with(|m| {
+            let map = m.borrow();
+            let h = map
+                .get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))?;
+            let mode = pil_rust_core::mode(h);
+            Ok((pil_rust_core::getcolors(h, maxcolors), mode.to_string()))
+        })?;
+        match result {
+            None => Ok(vm.ctx.none()),
+            Some(colors) => {
+                let channels = match img_mode.as_str() {
+                    "L" => 1,
+                    "LA" => 2,
+                    "RGB" => 3,
+                    _ => 4,
+                };
+                let list: Vec<PyObjectRef> = colors
+                    .into_iter()
+                    .map(|(count, rgba)| {
+                        let color: PyObjectRef = match channels {
+                            1 => vm.ctx.new_int(rgba[0] as i32).into(),
+                            _ => {
+                                let vals: Vec<PyObjectRef> = (0..channels)
+                                    .map(|i| vm.ctx.new_int(rgba[i] as i32).into())
+                                    .collect();
+                                vm.ctx.new_tuple(vals).into()
+                            }
+                        };
+                        let pair = vec![vm.ctx.new_int(count as i32).into(), color];
+                        vm.ctx.new_tuple(pair).into()
+                    })
+                    .collect();
+                Ok(vm.ctx.new_list(list).into())
+            }
+        }
+    }
+
     // -- Helpers -----------------------------------------------------------
 
     /// Extract a color from a Python object (int, tuple, or list) into bytes.

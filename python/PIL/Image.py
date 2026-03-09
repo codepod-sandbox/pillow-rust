@@ -224,6 +224,14 @@ class Image:
 
     # -- compositing -------------------------------------------------------
 
+    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
+        """Return a quantized copy with at most *colors* distinct colors."""
+        return Image(_pil_native.image_quantize(self._handle, int(colors)))
+
+    def getcolors(self, maxcolors=256):
+        """Return a list of (count, color) tuples, or None if too many colors."""
+        return _pil_native.image_getcolors(self._handle, int(maxcolors))
+
     def alpha_composite(self, im, dest=(0, 0), source=(0, 0)):
         """Alpha composite *im* over this image."""
         return Image(_pil_native.image_alpha_composite(self._handle, im._handle))

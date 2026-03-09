@@ -49,6 +49,8 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 | `Image.composite(im1, im2, mask)` | Done | mask-based selection |
 | `image.info` | Done | metadata dict (empty on open) |
 | `image.format` | Done | source format string (JPEG, PNG, etc.) |
+| `image.quantize(colors)` | Done | median-cut, returns RGB |
+| `image.getcolors(maxcolors)` | Done | returns list of (count, color) or None |
 
 ### PIL.ImageDraw
 
@@ -204,7 +206,7 @@ Less common but occasionally used.
 | Feature | Status | Notes |
 |---------|--------|-------|
 | `image.transform(size, method, data)` | TODO | affine/perspective |
-| `image.quantize(colors)` | TODO | color reduction, needs P mode |
+| ~~`image.quantize(colors)`~~ | Done | moved to Implemented |
 
 ### Additional modes
 
