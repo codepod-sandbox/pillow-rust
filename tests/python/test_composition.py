@@ -39,14 +39,18 @@ def test_composite_mask_white():
     im2 = Image.new("RGB", (10, 10), (0, 255, 0))
     mask = Image.new("L", (10, 10), 255)
     out = Image.composite(im1, im2, mask)
-    assert out.getpixel((5, 5)) == (0, 255, 0, 255)
+    px = out.getpixel((5, 5))
+    # Pillow: mask=255 selects im1 (red)
+    assert px[:3] == (255, 0, 0)
 
 def test_composite_mask_black():
     im1 = Image.new("RGB", (10, 10), (255, 0, 0))
     im2 = Image.new("RGB", (10, 10), (0, 255, 0))
     mask = Image.new("L", (10, 10), 0)
     out = Image.composite(im1, im2, mask)
-    assert out.getpixel((5, 5)) == (255, 0, 0, 255)
+    px = out.getpixel((5, 5))
+    # Pillow: mask=0 selects im2 (green)
+    assert px[:3] == (0, 255, 0)
 
 
 # ---------------------------------------------------------------------------

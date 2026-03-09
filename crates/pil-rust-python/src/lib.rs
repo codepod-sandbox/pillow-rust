@@ -4,16 +4,36 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use pil_rust_core::ImageHandle;
+use pil_rust_core::{FontHandle, ImageHandle};
 
 // ---------------------------------------------------------------------------
-// Handle management — thread-local map of image handles
+// Handle management — thread-local map of image and font handles
 // ---------------------------------------------------------------------------
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 thread_local! {
     static IMAGES: RefCell<HashMap<usize, ImageHandle>> = RefCell::new(HashMap::new());
+    static FONTS: RefCell<HashMap<usize, FontHandle>> = RefCell::new(HashMap::new());
+}
+
+fn alloc_font(handle: FontHandle) -> usize {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    FONTS.with(|m| m.borrow_mut().insert(id, handle));
+    id
+}
+
+fn with_font<F, R>(id: usize, f: F) -> Result<R, String>
+where
+    F: FnOnce(&FontHandle) -> R,
+{
+    FONTS.with(|m| {
+        let map = m.borrow();
+        let h = map
+            .get(&id)
+            .ok_or_else(|| format!("invalid font handle: {id}"))?;
+        Ok(f(h))
+    })
 }
 
 fn alloc(handle: ImageHandle) -> usize {
@@ -837,6 +857,75 @@ pub mod _pil_native {
                 Ok(vm.ctx.new_list(list).into())
             }
         }
+    }
+
+    // -- Font functions ----------------------------------------------------
+
+    #[pyfunction]
+    fn font_load(data: Vec<u8>, px_size: f32, vm: &VirtualMachine) -> PyResult<usize> {
+        pil_rust_core::font_load(&data, px_size)
+            .map(alloc_font)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn font_load_default(px_size: f32, _vm: &VirtualMachine) -> usize {
+        alloc_font(pil_rust_core::font_load_default(px_size))
+    }
+
+    #[pyfunction]
+    fn font_close(font_id: usize, _vm: &VirtualMachine) {
+        FONTS.with(|m| m.borrow_mut().remove(&font_id));
+    }
+
+    #[pyfunction]
+    fn font_metrics(font_id: usize, vm: &VirtualMachine) -> PyResult<(f32, f32, f32)> {
+        with_font(font_id, |fh| pil_rust_core::font_metrics(fh))
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn font_text_length(font_id: usize, text: String, vm: &VirtualMachine) -> PyResult<f32> {
+        with_font(font_id, |fh| pil_rust_core::font_text_length(fh, &text))
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn font_text_bbox(
+        font_id: usize,
+        text: String,
+        x: f32,
+        y: f32,
+        vm: &VirtualMachine,
+    ) -> PyResult<(f32, f32, f32, f32)> {
+        with_font(font_id, |fh| pil_rust_core::font_text_bbox(fh, &text, x, y))
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn draw_text_ttf(
+        handle_id: usize,
+        font_id: usize,
+        x: f32,
+        y: f32,
+        text: String,
+        color: PyObjectRef,
+        anchor: vm::function::OptionalArg<String>,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        let c = extract_color_rgba(&color, vm)?;
+        let anch = anchor.into_option().unwrap_or_else(|| "left".to_string());
+        // Clone font to avoid holding FONTS borrow during draw
+        let font = FONTS.with(|m| {
+            m.borrow()
+                .get(&font_id)
+                .cloned()
+                .ok_or_else(|| vm.new_value_error(format!("invalid font handle: {font_id}")))
+        })?;
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_text_ttf(h, &font, x, y, &text, c, &anch)
+        })
+        .map_err(|e| vm.new_value_error(e))
     }
 
     // -- Helpers -----------------------------------------------------------

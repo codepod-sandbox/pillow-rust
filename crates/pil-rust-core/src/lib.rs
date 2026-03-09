@@ -1,3 +1,4 @@
+use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use image::{DynamicImage, GenericImage, GenericImageView, ImageBuffer, ImageFormat};
 use std::io::Cursor;
 
@@ -964,6 +965,153 @@ pub fn draw_text(
 }
 
 // ---------------------------------------------------------------------------
+// TrueType font support (via ab_glyph)
+// ---------------------------------------------------------------------------
+
+/// Embedded default font (Liberation Sans Regular).
+static DEFAULT_FONT_DATA: &[u8] = include_bytes!("fonts/LiberationSans-Regular.ttf");
+
+/// A loaded TrueType font at a specific pixel size.
+pub struct FontHandle {
+    pub font: FontArc,
+    pub px_size: f32,
+}
+
+impl Clone for FontHandle {
+    fn clone(&self) -> Self {
+        Self {
+            font: self.font.clone(),
+            px_size: self.px_size,
+        }
+    }
+}
+
+/// Load a TrueType font from raw TTF/OTF data at the given pixel size.
+pub fn font_load(data: &[u8], px_size: f32) -> Result<FontHandle> {
+    let font = FontArc::try_from_vec(data.to_vec())
+        .map_err(|_| PilError::InvalidOperation("invalid font data".into()))?;
+    Ok(FontHandle { font, px_size })
+}
+
+/// Load the embedded default font at the given pixel size.
+pub fn font_load_default(px_size: f32) -> FontHandle {
+    let font = FontArc::try_from_slice(DEFAULT_FONT_DATA)
+        .expect("embedded font data is valid");
+    FontHandle { font, px_size }
+}
+
+/// Return (ascent, descent, line_height) for a font.
+pub fn font_metrics(fh: &FontHandle) -> (f32, f32, f32) {
+    let scale = PxScale::from(fh.px_size);
+    let scaled = fh.font.as_scaled(scale);
+    let ascent = scaled.ascent();
+    let descent = scaled.descent(); // negative value
+    let height = scaled.height();
+    (ascent, -descent, height)
+}
+
+/// Return the pixel width of a single line of text.
+pub fn font_text_length(fh: &FontHandle, text: &str) -> f32 {
+    let scale = PxScale::from(fh.px_size);
+    let scaled = fh.font.as_scaled(scale);
+    let mut width = 0.0f32;
+    let mut prev_glyph: Option<ab_glyph::GlyphId> = None;
+    for ch in text.chars() {
+        let glyph_id = scaled.glyph_id(ch);
+        if let Some(prev) = prev_glyph {
+            width += scaled.kern(prev, glyph_id);
+        }
+        width += scaled.h_advance(glyph_id);
+        prev_glyph = Some(glyph_id);
+    }
+    width
+}
+
+/// Return bounding box (x0, y0, x1, y1) for text at position (x, y).
+pub fn font_text_bbox(fh: &FontHandle, text: &str, x: f32, y: f32) -> (f32, f32, f32, f32) {
+    let scale = PxScale::from(fh.px_size);
+    let scaled = fh.font.as_scaled(scale);
+    let ascent = scaled.ascent();
+    let descent = scaled.descent();
+    let width = font_text_length(fh, text);
+    (x, y - ascent, x + width, y - descent)
+}
+
+/// Draw TrueType text onto an image.
+pub fn draw_text_ttf(
+    handle: &mut ImageHandle,
+    fh: &FontHandle,
+    x: f32,
+    y: f32,
+    text: &str,
+    color: [u8; 4],
+    anchor: &str,
+) {
+    let scale = PxScale::from(fh.px_size);
+    let scaled = fh.font.as_scaled(scale);
+    let ascent = scaled.ascent();
+
+    // Compute text width for anchor alignment
+    let text_width = font_text_length(fh, text);
+    let start_x = match anchor {
+        "center" | "mm" => x - text_width / 2.0,
+        "right" | "rm" | "ra" => x - text_width,
+        _ => x,
+    };
+
+    // Baseline y: "y" is the top of the text box in Pillow convention
+    let baseline_y = y + ascent;
+
+    let (img_w, img_h) = handle.inner.dimensions();
+    let pixel = image::Rgba(color);
+
+    let mut cursor_x = start_x;
+    let mut prev_glyph: Option<ab_glyph::GlyphId> = None;
+
+    for ch in text.chars() {
+        let glyph_id = scaled.glyph_id(ch);
+        if let Some(prev) = prev_glyph {
+            cursor_x += scaled.kern(prev, glyph_id);
+        }
+
+        let glyph = glyph_id.with_scale_and_position(
+            scale,
+            ab_glyph::point(cursor_x, baseline_y),
+        );
+
+        if let Some(outlined) = fh.font.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            outlined.draw(|gx, gy, coverage| {
+                let px = gx as i32 + bounds.min.x as i32;
+                let py = gy as i32 + bounds.min.y as i32;
+                if px >= 0 && px < img_w as i32 && py >= 0 && py < img_h as i32 {
+                    if coverage >= 0.99 {
+                        handle.inner.put_pixel(px as u32, py as u32, pixel);
+                    } else if coverage > 0.01 {
+                        // Alpha blend with existing pixel
+                        let dst = handle.inner.get_pixel(px as u32, py as u32);
+                        let a = coverage;
+                        let blend = |s: u8, d: u8| -> u8 {
+                            (s as f32 * a + d as f32 * (1.0 - a)).round() as u8
+                        };
+                        let blended = image::Rgba([
+                            blend(color[0], dst.0[0]),
+                            blend(color[1], dst.0[1]),
+                            blend(color[2], dst.0[2]),
+                            blend(color[3], dst.0[3]),
+                        ]);
+                        handle.inner.put_pixel(px as u32, py as u32, blended);
+                    }
+                }
+            });
+        }
+
+        cursor_x += scaled.h_advance(glyph_id);
+        prev_glyph = Some(glyph_id);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Paste (compositing)
 // ---------------------------------------------------------------------------
 
@@ -1674,10 +1822,11 @@ pub fn composite(im1: &ImageHandle, im2: &ImageHandle, mask: &ImageHandle) -> Re
             let pb = b.get_pixel(x, y);
             let mv = m.get_pixel(x, y)[0] as f64 / 255.0;
             let inv = 1.0 - mv;
-            let r = (pa[0] as f64 * inv + pb[0] as f64 * mv) as u8;
-            let g = (pa[1] as f64 * inv + pb[1] as f64 * mv) as u8;
-            let bl = (pa[2] as f64 * inv + pb[2] as f64 * mv) as u8;
-            let al = (pa[3] as f64 * inv + pb[3] as f64 * mv) as u8;
+            // Pillow: mask=255 → im1, mask=0 → im2
+            let r = (pa[0] as f64 * mv + pb[0] as f64 * inv) as u8;
+            let g = (pa[1] as f64 * mv + pb[1] as f64 * inv) as u8;
+            let bl = (pa[2] as f64 * mv + pb[2] as f64 * inv) as u8;
+            let al = (pa[3] as f64 * mv + pb[3] as f64 * inv) as u8;
             out.put_pixel(x, y, image::Rgba([r, g, bl, al]));
         }
     }

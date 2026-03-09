@@ -201,13 +201,13 @@ Codepod's PIL implementation: a Rust-backed subset of Pillow running in WASM via
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `truetype(font, size)` | Done | returns built-in bitmap font at requested size |
-| `load_default(size)` | Done | built-in bitmap font |
+| `truetype(font, size)` | Done | TrueType via ab_glyph; reads TTF/OTF files |
+| `load_default(size)` | Done | embedded Liberation Sans Regular |
 | `load(filename)` | Done | returns default font |
-| `font.getbbox(text)` | Done | |
-| `font.getlength(text)` | Done | |
+| `font.getbbox(text)` | Done | real glyph metrics |
+| `font.getlength(text)` | Done | kerning-aware |
 | `font.getsize(text)` | Done | deprecated compat |
-| `font.getmetrics()` | Done | |
+| `font.getmetrics()` | Done | ascent/descent from font tables |
 
 ---
 

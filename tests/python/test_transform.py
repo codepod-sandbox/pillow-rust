@@ -117,7 +117,8 @@ def test_path_transform():
 def test_path_compact():
     p = ImagePath.Path([(0, 0), (0.5, 0.5), (10, 10)])
     n = p.compact(distance=2)
-    assert n == 2  # middle point removed
+    assert n == 1  # middle point removed (too close to first)
+    assert len(p) == 2
 
 
 def test_path_empty_bbox():

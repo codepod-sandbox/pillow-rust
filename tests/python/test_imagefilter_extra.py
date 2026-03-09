@@ -40,8 +40,8 @@ def test_emboss():
     out = im.filter(ImageFilter.EMBOSS)
     assert out.size == im.size
     # Emboss of uniform area should produce ~128 (offset)
-    r, g, b = out.getpixel((0, 0))
-    assert 120 < r < 140
+    px = out.getpixel((0, 0))
+    assert 120 < px[0] < 140
 
 def test_find_edges():
     im = _make_test_image()

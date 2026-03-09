@@ -3,6 +3,7 @@ PIL.ImageDraw — simple 2-D drawing on Image objects.
 """
 
 import _pil_native
+from PIL.ImageColor import getrgb as _getrgb
 
 
 class ImageDraw:
@@ -125,16 +126,27 @@ class ImageDraw:
         """
         self.pieslice(xy, start, end, fill=fill, outline=outline, width=width)
 
-    def text(self, xy, text, fill=None, font=None, anchor=None):
+    def text(self, xy, text, fill=None, font=None, anchor=None, **kwargs):
         """Draw text at the given position.
 
         *xy* is ``(x, y)``.  *fill* is the text colour.
-        *font* — if it has a ``size`` attribute >= 16, uses 2× scaling.
+        *font* — a FreeTypeFont (TrueType or bitmap fallback).
         *anchor* — ``"left"`` (default), ``"center"``, or ``"right"``.
         """
         color = fill or (255, 255, 255)
+        if isinstance(color, str):
+            color = _getrgb(color)
         if isinstance(color, int):
             color = (color, color, color)
+        # TrueType path
+        if font and hasattr(font, '_handle') and font._handle is not None:
+            _pil_native.draw_text_ttf(
+                self._image._handle, font._handle,
+                float(xy[0]), float(xy[1]), str(text),
+                list(color), anchor or "left"
+            )
+            return
+        # Bitmap fallback
         size = 1  # default 8×16
         if font and hasattr(font, 'size'):
             size = 2 if font.size >= 16 else 1
@@ -145,10 +157,12 @@ class ImageDraw:
 
 
     def textbbox(self, xy, text, font=None, anchor=None, **kwargs):
-        """Return bounding box (x0, y0, x1, y1) of text at position *xy*.
-
-        Uses built-in 8x16 monospace bitmap font metrics.
-        """
+        """Return bounding box (x0, y0, x1, y1) of text at position *xy*."""
+        if font and hasattr(font, '_handle') and font._handle is not None:
+            return _pil_native.font_text_bbox(
+                font._handle, str(text), float(xy[0]), float(xy[1])
+            )
+        # Bitmap fallback
         char_w, char_h = 8, 16
         if font and hasattr(font, 'size'):
             scale = 2 if font.size >= 16 else 1
@@ -171,6 +185,8 @@ class ImageDraw:
 
     def textlength(self, text, font=None, **kwargs):
         """Return width of *text* in pixels."""
+        if font and hasattr(font, '_handle') and font._handle is not None:
+            return _pil_native.font_text_length(font._handle, str(text))
         char_w = 8
         if font and hasattr(font, 'size'):
             char_w = 16 if font.size >= 16 else 8
@@ -178,12 +194,24 @@ class ImageDraw:
 
     def multiline_textbbox(self, xy, text, font=None, spacing=4, **kwargs):
         """Return bounding box of multi-line text."""
+        lines = str(text).split("\n")
+        if font and hasattr(font, '_handle') and font._handle is not None:
+            ascent, descent, _height = _pil_native.font_metrics(font._handle)
+            line_h = ascent + descent
+            max_w = 0.0
+            for line in lines:
+                w = _pil_native.font_text_length(font._handle, line)
+                if w > max_w:
+                    max_w = w
+            text_h = len(lines) * line_h + (len(lines) - 1) * spacing if lines else 0
+            x, y = float(xy[0]), float(xy[1])
+            return (x, y, x + max_w, y + text_h)
+        # Bitmap fallback
         char_w, char_h = 8, 16
         if font and hasattr(font, 'size'):
             scale = 2 if font.size >= 16 else 1
             char_w *= scale
             char_h *= scale
-        lines = str(text).split("\n")
         max_len = max(len(line) for line in lines) if lines else 0
         text_w = max_len * char_w
         text_h = len(lines) * char_h + (len(lines) - 1) * spacing if lines else 0
@@ -196,14 +224,16 @@ class ImageDraw:
         color = fill or (255, 255, 255)
         if isinstance(color, int):
             color = (color, color, color)
-        char_h = 16
-        if font and hasattr(font, 'size'):
-            char_h = 32 if font.size >= 16 else 16
+        if font and hasattr(font, '_handle') and font._handle is not None:
+            ascent, descent, _height = _pil_native.font_metrics(font._handle)
+            line_h = ascent + descent
+        else:
+            line_h = 32 if (font and hasattr(font, 'size') and font.size >= 16) else 16
 
-        x, y = int(xy[0]), int(xy[1])
+        x, y = float(xy[0]), float(xy[1])
         for line in str(text).split("\n"):
             self.text((x, y), line, fill=color, font=font, anchor=anchor)
-            y += char_h + spacing
+            y += line_h + spacing
 
     def rounded_rectangle(self, xy, radius=0, fill=None, outline=None, width=1):
         """Draw a rounded rectangle.

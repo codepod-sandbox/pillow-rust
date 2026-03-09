@@ -46,7 +46,7 @@ def test_screen():
     im1 = Image.new("L", (10, 10), 128)
     im2 = Image.new("L", (10, 10), 128)
     out = ImageChops.screen(im1, im2)
-    assert out.getpixel((5, 5)) == 191  # 255 - (127*127/255)
+    assert out.getpixel((5, 5)) == 192  # 255 - ((255-128)*(255-128)//255)
 
 def test_difference():
     im1 = Image.new("L", (10, 10), 200)

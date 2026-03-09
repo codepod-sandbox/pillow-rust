@@ -50,15 +50,15 @@ def test_getbbox():
     assert len(bbox) == 4
     x0, y0, x1, y1 = bbox
     assert x0 == 0
-    assert y0 == 0
+    assert y0 <= 0  # top of text (negative = above origin)
     assert x1 > 0  # width
-    assert y1 > 0  # height
+    assert y1 > y0  # height
 
 
 def test_getbbox_empty():
     font = ImageFont.load_default()
     bbox = font.getbbox("")
-    assert bbox == (0, 0, 0, 0) or bbox[2] == 0
+    assert bbox[2] == 0  # zero width for empty text
 
 
 # -- getlength --------------------------------------------------------------
