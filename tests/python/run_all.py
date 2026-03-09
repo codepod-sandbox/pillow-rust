@@ -28,6 +28,9 @@ test_files = [
     "test_quantize",
     "test_image_methods",
     "test_transform",
+    "test_save_options",
+    "test_imagefont",
+    "test_imagedraw_extra",
 ]
 
 total_pass = 0
