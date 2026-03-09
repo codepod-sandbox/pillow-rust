@@ -73,7 +73,45 @@ class Image:
     # -- paste --------------------------------------------------------------
 
     def paste(self, im, box=None, mask=None):
-        """Paste *im* onto this image. *box* is (x, y) or (x, y, x1, y1)."""
+        """Paste *im* onto this image.
+
+        *im* can be an Image, a color integer, or a color tuple.
+        *box* is (x, y) or (x, y, x1, y1).
+        """
+        # Handle color fill: paste(color, box) fills the region
+        if isinstance(im, (int, tuple)):
+            color = im
+            if isinstance(color, int):
+                if self.mode in ("RGB", "RGBA"):
+                    color = (color, color, color) + ((255,) if self.mode == "RGBA" else ())
+                elif self.mode == "L":
+                    color = (color,)
+                elif self.mode == "LA":
+                    color = (color, 255)
+                else:
+                    color = (color,)
+            if box is None:
+                w, h = self.size
+                fill_box = (0, 0, w, h)
+            elif len(box) == 2:
+                fill_box = (box[0], box[1], self.size[0], self.size[1])
+            else:
+                fill_box = box
+            # Create a solid-color image to paste
+            bw = fill_box[2] - fill_box[0]
+            bh = fill_box[3] - fill_box[1]
+            if bw <= 0 or bh <= 0:
+                return
+            fill_im = new(self.mode, (bw, bh), color)
+            x, y = fill_box[0], fill_box[1]
+            if mask is not None:
+                mask_handle = mask._handle if hasattr(mask, '_handle') else None
+                if mask_handle is not None:
+                    _pil_native.image_paste(self._handle, fill_im._handle, x, y, mask_handle)
+                    return
+            _pil_native.image_paste(self._handle, fill_im._handle, x, y)
+            return
+
         if box is None:
             x, y = 0, 0
         elif len(box) == 2:
@@ -376,6 +414,10 @@ def open(fp, mode="r"):
 
 def new(mode, size, color=0):
     """Create a new image with the given *mode* and *size*."""
+    if isinstance(color, str):
+        # Named color support: "red", "#ff0000", "rgb(255,0,0)", etc.
+        from PIL import ImageColor
+        color = ImageColor.getcolor(color, mode)
     if isinstance(color, int):
         if mode in ("RGB", "RGBA"):
             color = [color, color, color] + ([255] if mode == "RGBA" else [])

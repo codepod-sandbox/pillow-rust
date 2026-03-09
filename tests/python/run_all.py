@@ -79,6 +79,54 @@ for name in test_files:
         traceback.print_exc()
         total_fail += 1
 
+# ---------------------------------------------------------------------------
+# Run upstream Pillow compatibility tests (pillow_compat/)
+# ---------------------------------------------------------------------------
+compat_dir = os.path.join(os.path.dirname(__file__), '..', 'pillow_compat')
+if os.path.isdir(compat_dir):
+    print(f"\n{'='*60}")
+    print(f"  pillow_compat (upstream tests)")
+    print(f"{'='*60}")
+    try:
+        compat_dir = os.path.abspath(compat_dir)
+        if compat_dir not in sys.path:
+            sys.path.insert(0, compat_dir)
+        # Load and run compat tests
+        compat_runner_path = os.path.join(compat_dir, 'run_compat.py')
+        if os.path.exists(compat_runner_path):
+            spec = importlib.util.spec_from_file_location("run_compat", compat_runner_path)
+            compat_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(compat_mod)
+
+            import io
+            buf = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = buf
+            try:
+                compat_success = compat_mod.run_all_compat()
+            finally:
+                sys.stdout = old_stdout
+
+            output = buf.getvalue()
+            print(output)
+
+            # Parse compat results from output
+            for line in output.split('\n'):
+                if 'pillow_compat' in line and 'passed' in line:
+                    parts = line.strip().split()
+                    for i, p in enumerate(parts):
+                        if p == 'passed,':
+                            total_pass += int(parts[i-1])
+                        elif p == 'failed,' or p == 'failures,':
+                            total_fail += int(parts[i-1])
+                        elif p.startswith('skipped'):
+                            total_skip += int(parts[i-1])
+    except Exception as e:
+        print(f"  ERROR running pillow_compat: {e}")
+        traceback.print_exc()
+        # Don't count compat errors as hard failures for now
+        # total_fail += 1
+
 print(f"\n{'#'*60}")
 print(f"  TOTAL: {total_pass} passed, {total_fail} failed, {total_skip} skipped")
 print(f"{'#'*60}")

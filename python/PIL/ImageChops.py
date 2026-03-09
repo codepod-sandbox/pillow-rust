@@ -91,8 +91,8 @@ def invert(image):
 
 
 def constant(image, value):
-    """Return image filled with a constant *value*, same mode and size."""
-    return ImageModule.new(image.mode, image.size, value)
+    """Return L-mode image filled with a constant *value*, same size as input."""
+    return ImageModule.new("L", image.size, value)
 
 
 def duplicate(image):

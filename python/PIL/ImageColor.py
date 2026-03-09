@@ -163,68 +163,183 @@ def getrgb(color):
     - Hex: "#RGB", "#RRGGBB", "#RRGGBBAA"
     - rgb()/rgba(): "rgb(255, 0, 0)", "rgba(255, 0, 0, 128)"
     - hsl(): "hsl(0, 100%, 50%)"
+    - hsv()/hsb(): "hsv(0, 100%, 100%)"
     """
     if not isinstance(color, str):
         raise ValueError("color must be a string")
 
     original = color
-    color = color.strip()
 
-    # Named color
+    # Named color — must be exact match (no extra spaces)
     lower = color.lower()
     if lower in colormap:
         return getrgb(colormap[lower])
 
+    # Reject if it doesn't look like a valid format
+    if color != color.strip():
+        raise ValueError("unknown color specifier: %r" % original)
+
     # Hex
     if color.startswith("#"):
         h = color[1:]
-        if len(h) == 3:
-            r = int(h[0] * 2, 16)
-            g = int(h[1] * 2, 16)
-            b = int(h[2] * 2, 16)
-            return (r, g, b)
-        if len(h) == 4:
-            r = int(h[0] * 2, 16)
-            g = int(h[1] * 2, 16)
-            b = int(h[2] * 2, 16)
-            a = int(h[3] * 2, 16)
-            return (r, g, b, a)
-        if len(h) == 6:
-            r = int(h[0:2], 16)
-            g = int(h[2:4], 16)
-            b = int(h[4:6], 16)
-            return (r, g, b)
-        if len(h) == 8:
-            r = int(h[0:2], 16)
-            g = int(h[2:4], 16)
-            b = int(h[4:6], 16)
-            a = int(h[6:8], 16)
-            return (r, g, b, a)
+        if len(h) in (3, 4, 6, 8):
+            try:
+                if len(h) == 3:
+                    return (int(h[0] * 2, 16), int(h[1] * 2, 16), int(h[2] * 2, 16))
+                if len(h) == 4:
+                    return (int(h[0] * 2, 16), int(h[1] * 2, 16), int(h[2] * 2, 16), int(h[3] * 2, 16))
+                if len(h) == 6:
+                    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+                if len(h) == 8:
+                    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), int(h[6:8], 16))
+            except ValueError:
+                pass
+        raise ValueError("unknown color specifier: %r" % original)
 
-    # rgb(r, g, b) / rgba(r, g, b, a)
-    if color.startswith("rgb"):
-        inner = color.split("(", 1)
-        if len(inner) == 2:
-            inner = inner[1].rstrip(")")
-            parts = [p.strip() for p in inner.split(",")]
-            if len(parts) == 3:
-                return (int(parts[0]), int(parts[1]), int(parts[2]))
-            if len(parts) == 4:
-                return (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+    # Lowercase for function matching
+    clower = color.lower()
 
-    # hsl(h, s%, l%)
-    if color.startswith("hsl"):
-        inner = color.split("(", 1)
-        if len(inner) == 2:
-            inner = inner[1].rstrip(")")
-            parts = [p.strip().rstrip("%") for p in inner.split(",")]
-            if len(parts) == 3:
-                h = float(parts[0]) / 360.0
-                s = float(parts[1]) / 100.0
-                l = float(parts[2]) / 100.0
-                return _hsl_to_rgb(h, s, l)
+    # rgb(r, g, b) / RGB(r, g, b) — with percent support
+    if clower.startswith("rgb(") or clower.startswith("rgba("):
+        return _parse_rgb(color, original)
+
+    # hsl(h, s%, l%) / HSL(h, s%, l%)
+    if clower.startswith("hsl("):
+        return _parse_hsl(color, original)
+
+    # hsv(h, s%, v%) / HSV(h, s%, v%) / hsb(h, s%, b%)
+    if clower.startswith("hsv(") or clower.startswith("hsb("):
+        return _parse_hsv(color, original)
 
     raise ValueError("unknown color specifier: %r" % original)
+
+
+def _parse_inner(color):
+    """Extract the inner part of a function call like 'rgb(1, 2, 3)'."""
+    idx = color.index("(")
+    inner = color[idx + 1:]
+    if not inner.endswith(")"):
+        raise ValueError("missing closing paren")
+    return inner[:-1]
+
+
+def _parse_rgb(color, original):
+    """Parse rgb(...) or rgba(...) color strings."""
+    try:
+        inner = _parse_inner(color)
+    except ValueError:
+        raise ValueError("unknown color specifier: %r" % original)
+
+    parts = [p.strip() for p in inner.split(",")]
+
+    is_rgba = color.lower().startswith("rgba(")
+
+    if is_rgba:
+        if len(parts) != 4:
+            raise ValueError("unknown color specifier: %r" % original)
+    else:
+        if len(parts) != 3:
+            raise ValueError("unknown color specifier: %r" % original)
+
+    # Check if percent format
+    if parts[0].endswith("%"):
+        # All non-alpha parts must be percent
+        for i in range(3):
+            if i >= len(parts):
+                break
+            if not parts[i].endswith("%"):
+                raise ValueError("unknown color specifier: %r" % original)
+        values = []
+        for i in range(3):
+            p = parts[i].rstrip("%")
+            values.append(int(float(p) * 255 / 100 + 0.5))
+        if is_rgba:
+            if parts[3].endswith("%"):
+                raise ValueError("unknown color specifier: %r" % original)
+            values.append(int(parts[3]))
+        return tuple(values)
+    else:
+        # Integer format
+        try:
+            values = [int(p) for p in parts]
+        except ValueError:
+            raise ValueError("unknown color specifier: %r" % original)
+        return tuple(values)
+
+
+def _parse_hsl(color, original):
+    """Parse hsl(h, s%, l%) color strings."""
+    try:
+        inner = _parse_inner(color)
+    except ValueError:
+        raise ValueError("unknown color specifier: %r" % original)
+
+    parts = [p.strip() for p in inner.split(",")]
+    if len(parts) != 3:
+        raise ValueError("unknown color specifier: %r" % original)
+
+    # h must NOT end with %, s and l MUST end with %
+    if parts[0].endswith("%"):
+        raise ValueError("unknown color specifier: %r" % original)
+    if not parts[1].endswith("%") or not parts[2].endswith("%"):
+        raise ValueError("unknown color specifier: %r" % original)
+
+    # Validate no spaces within percent values
+    for p in parts[1:]:
+        stripped = p.rstrip("%")
+        if stripped != stripped.strip():
+            raise ValueError("unknown color specifier: %r" % original)
+
+    try:
+        h_val = float(parts[0]) / 360.0
+        s_val = float(parts[1].rstrip("%")) / 100.0
+        l_val = float(parts[2].rstrip("%")) / 100.0
+    except (ValueError, OverflowError):
+        raise ValueError("unknown color specifier: %r" % original)
+
+    # Reject absurdly long numbers
+    for p in parts:
+        clean = p.rstrip("%")
+        if len(clean) > 20:
+            raise ValueError("unknown color specifier: %r" % original)
+
+    return _hsl_to_rgb(h_val, s_val, l_val)
+
+
+def _parse_hsv(color, original):
+    """Parse hsv(h, s%, v%) or hsb(h, s%, b%) color strings."""
+    try:
+        inner = _parse_inner(color)
+    except ValueError:
+        raise ValueError("unknown color specifier: %r" % original)
+
+    parts = [p.strip() for p in inner.split(",")]
+    if len(parts) != 3:
+        raise ValueError("unknown color specifier: %r" % original)
+
+    if parts[0].endswith("%"):
+        raise ValueError("unknown color specifier: %r" % original)
+    if not parts[1].endswith("%") or not parts[2].endswith("%"):
+        raise ValueError("unknown color specifier: %r" % original)
+
+    for p in parts[1:]:
+        stripped = p.rstrip("%")
+        if stripped != stripped.strip():
+            raise ValueError("unknown color specifier: %r" % original)
+
+    try:
+        h_val = float(parts[0]) / 360.0
+        s_val = float(parts[1].rstrip("%")) / 100.0
+        v_val = float(parts[2].rstrip("%")) / 100.0
+    except (ValueError, OverflowError):
+        raise ValueError("unknown color specifier: %r" % original)
+
+    for p in parts:
+        clean = p.rstrip("%")
+        if len(clean) > 20:
+            raise ValueError("unknown color specifier: %r" % original)
+
+    return _hsv_to_rgb(h_val, s_val, v_val)
 
 
 def _hsl_to_rgb(h, s, l):
@@ -258,20 +373,71 @@ def _hsl_to_rgb(h, s, l):
     return (r, g, b)
 
 
+def _hsv_to_rgb(h, s, v):
+    """Convert HSV (0-1 range) to (R, G, B) tuple (0-255)."""
+    if s == 0:
+        val = int(v * 255 + 0.5)
+        return (val, val, val)
+
+    i = int(h * 6.0)
+    f = (h * 6.0) - i
+    p_val = v * (1.0 - s)
+    q_val = v * (1.0 - s * f)
+    t_val = v * (1.0 - s * (1.0 - f))
+
+    i = i % 6
+    if i == 0:
+        r, g, b = v, t_val, p_val
+    elif i == 1:
+        r, g, b = q_val, v, p_val
+    elif i == 2:
+        r, g, b = p_val, v, t_val
+    elif i == 3:
+        r, g, b = p_val, q_val, v
+    elif i == 4:
+        r, g, b = t_val, p_val, v
+    else:
+        r, g, b = v, p_val, q_val
+
+    return (int(r * 255 + 0.5), int(g * 255 + 0.5), int(b * 255 + 0.5))
+
+
 def getcolor(color, mode):
     """Convert a color string to a value appropriate for the given *mode*.
 
-    Returns an integer for 'L', a tuple for 'RGB'/'RGBA'.
+    Returns an integer for 'L'/'1', a tuple for 'RGB'/'RGBA'/'LA'/'HSV'.
     """
     rgb = getrgb(color)
-    if mode == "L":
+    if mode == "L" or mode == "1":
         # ITU-R 601-2 luma
         r, g, b = rgb[0], rgb[1], rgb[2]
         return int(0.299 * r + 0.587 * g + 0.114 * b + 0.5)
+    if mode == "LA":
+        r, g, b = rgb[0], rgb[1], rgb[2]
+        l = int(0.299 * r + 0.587 * g + 0.114 * b + 0.5)
+        a = rgb[3] if len(rgb) == 4 else 255
+        return (l, a)
     if mode == "RGB":
         return rgb[:3]
     if mode == "RGBA":
         if len(rgb) == 4:
             return rgb
         return rgb[:3] + (255,)
+    if mode == "HSV":
+        r, g, b = rgb[0], rgb[1], rgb[2]
+        maxc = max(r, g, b)
+        minc = min(r, g, b)
+        v = maxc
+        if maxc == minc:
+            return (0, 0, v)
+        s = int((maxc - minc) / maxc * 255 + 0.5)
+        diff = maxc - minc
+        if maxc == r:
+            h = (g - b) / diff
+        elif maxc == g:
+            h = 2.0 + (b - r) / diff
+        else:
+            h = 4.0 + (r - g) / diff
+        h = int((h / 6.0) * 256 + 0.5) % 256
+        return (h, s, v)
     return rgb
