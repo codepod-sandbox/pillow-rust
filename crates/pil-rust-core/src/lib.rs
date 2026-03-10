@@ -995,8 +995,7 @@ pub fn font_load(data: &[u8], px_size: f32) -> Result<FontHandle> {
 
 /// Load the embedded default font at the given pixel size.
 pub fn font_load_default(px_size: f32) -> FontHandle {
-    let font = FontArc::try_from_slice(DEFAULT_FONT_DATA)
-        .expect("embedded font data is valid");
+    let font = FontArc::try_from_slice(DEFAULT_FONT_DATA).expect("embedded font data is valid");
     FontHandle { font, px_size }
 }
 
@@ -1074,10 +1073,7 @@ pub fn draw_text_ttf(
             cursor_x += scaled.kern(prev, glyph_id);
         }
 
-        let glyph = glyph_id.with_scale_and_position(
-            scale,
-            ab_glyph::point(cursor_x, baseline_y),
-        );
+        let glyph = glyph_id.with_scale_and_position(scale, ab_glyph::point(cursor_x, baseline_y));
 
         if let Some(outlined) = fh.font.outline_glyph(glyph) {
             let bounds = outlined.px_bounds();

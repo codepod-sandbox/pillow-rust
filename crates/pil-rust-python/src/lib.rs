@@ -880,8 +880,7 @@ pub mod _pil_native {
 
     #[pyfunction]
     fn font_metrics(font_id: usize, vm: &VirtualMachine) -> PyResult<(f32, f32, f32)> {
-        with_font(font_id, |fh| pil_rust_core::font_metrics(fh))
-            .map_err(|e| vm.new_value_error(e))
+        with_font(font_id, |fh| pil_rust_core::font_metrics(fh)).map_err(|e| vm.new_value_error(e))
     }
 
     #[pyfunction]
