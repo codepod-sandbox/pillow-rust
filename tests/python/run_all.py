@@ -77,6 +77,11 @@ test_files = [
     "test_image_split_exact",
     "test_imagedraw_line",
     "test_imageops_color",
+    "test_image_rotate_exact2",
+    "test_imagedraw_poly",
+    "test_image_convert2",
+    "test_imageenhance_exact",
+    "test_imagefilter_exact",
 ]
 
 total_pass = 0
