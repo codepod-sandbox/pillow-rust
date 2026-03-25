@@ -546,19 +546,25 @@ class Image:
         """Return contents as a flat list of pixel values."""
         return _pil_native.image_getdata(self._handle)
 
-    def putdata(self, data):
+    def putdata(self, data, scale=1.0, offset=0.0):
         """Replace image data from a flat sequence of pixel values."""
         m = self.mode
         bands = {"L": 1, "LA": 2, "RGB": 3, "RGBA": 4}.get(m, 3)
         flat = []
         for px in data:
             if isinstance(px, (tuple, list)):
-                flat.extend(px)
+                if scale != 1.0 or offset != 0.0:
+                    flat.extend(max(0, min(255, int(v * scale + offset))) for v in px)
+                else:
+                    flat.extend(px)
             else:
-                if bands == 1:
-                    flat.append(int(px) & 0xFF)
+                if scale != 1.0 or offset != 0.0:
+                    v = max(0, min(255, int(px * scale + offset)))
                 else:
                     v = int(px) & 0xFF
+                if bands == 1:
+                    flat.append(v)
+                else:
                     for _ in range(bands):
                         flat.append(v)
         _pil_native.image_putdata(self._handle, flat)

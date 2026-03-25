@@ -68,6 +68,15 @@ test_files = [
     "test_imagechops_ops",
     "test_image_transform_exact",
     "test_imageenhance_ops",
+    "test_imagedraw_arc",
+    "test_image_bytes_exact",
+    "test_image_operations",
+    "test_imagecolor_exact",
+    "test_image_crop_oob",
+    "test_image_paste_oob",
+    "test_image_split_exact",
+    "test_imagedraw_line",
+    "test_imageops_color",
 ]
 
 total_pass = 0

@@ -43,15 +43,19 @@ class ImageDraw:
             _pil_native.draw_ellipse(self._image._handle, list(coords), [255, 255, 255], True)
 
     def line(self, xy, fill=None, width=1):
-        """Draw a line between points.
+        """Draw a line between points (supports polylines).
 
-        *xy* is ``[(x0, y0), (x1, y1)]`` or ``[x0, y0, x1, y1]``.
+        *xy* is ``[(x0, y0), (x1, y1), ...]`` or ``[x0, y0, x1, y1, ...]``.
         """
         coords = _normalise_xy(xy)
         color = fill if fill is not None else (255, 255, 255)
         if isinstance(color, int):
             color = (color, color, color)
-        _pil_native.draw_line(self._image._handle, list(coords), list(color), width)
+        # Draw segments between consecutive pairs of points
+        n = len(coords) // 2
+        for i in range(n - 1):
+            seg = coords[i*2 : i*2+4]
+            _pil_native.draw_line(self._image._handle, list(seg), list(color), width)
 
 
     def polygon(self, xy, fill=None, outline=None, width=1):
