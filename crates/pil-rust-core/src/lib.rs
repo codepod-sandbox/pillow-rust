@@ -515,6 +515,10 @@ pub fn filter(handle: &ImageHandle, name: &str, args: &[f32]) -> Result<ImageHan
             let size = args.first().copied().unwrap_or(3.0) as u32;
             apply_rank_filter(&handle.inner, size, size * size - 1)
         }
+        "box_blur" => {
+            let radius = args.first().copied().unwrap_or(1.0) as u32;
+            apply_box_blur(&handle.inner, radius)
+        }
         _ => {
             return Err(PilError::InvalidOperation(format!(
                 "unknown filter: {name}"
@@ -534,10 +538,35 @@ fn apply_kernel3x3_scaled(
     scale: f32,
     offset: f32,
 ) -> image::DynamicImage {
+    let inv_scale = 1.0 / scale;
+
+    // Preserve L mode
+    if matches!(img, image::DynamicImage::ImageLuma8(_)) {
+        let gray = img.to_luma8();
+        let (w, h) = gray.dimensions();
+        let mut out = image::GrayImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let mut sum = 0.0f32;
+                let mut ki = 0;
+                for ky in -1i32..=1 {
+                    for kx in -1i32..=1 {
+                        let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
+                        let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
+                        sum += gray.get_pixel(sx, sy)[0] as f32 * kernel[ki];
+                        ki += 1;
+                    }
+                }
+                let v = (sum * inv_scale + offset).clamp(0.0, 255.0) as u8;
+                out.put_pixel(x, y, image::Luma([v]));
+            }
+        }
+        return image::DynamicImage::ImageLuma8(out);
+    }
+
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     let mut out = image::RgbaImage::new(w, h);
-    let inv_scale = 1.0 / scale;
 
     for y in 0..h {
         for x in 0..w {
@@ -567,11 +596,35 @@ fn apply_kernel3x3_scaled(
 }
 
 fn apply_rank_filter(img: &image::DynamicImage, size: u32, rank: u32) -> image::DynamicImage {
+    let half = (size / 2) as i32;
+    let rank = rank as usize;
+
+    // Preserve L mode
+    if matches!(img, image::DynamicImage::ImageLuma8(_)) {
+        let gray = img.to_luma8();
+        let (w, h) = gray.dimensions();
+        let mut out = image::GrayImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let mut vals: Vec<u8> = Vec::new();
+                for ky in -half..=half {
+                    for kx in -half..=half {
+                        let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
+                        let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
+                        vals.push(gray.get_pixel(sx, sy)[0]);
+                    }
+                }
+                vals.sort_unstable();
+                let idx = rank.min(vals.len() - 1);
+                out.put_pixel(x, y, image::Luma([vals[idx]]));
+            }
+        }
+        return image::DynamicImage::ImageLuma8(out);
+    }
+
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     let mut out = image::RgbaImage::new(w, h);
-    let half = (size / 2) as i32;
-    let rank = rank as usize;
 
     for y in 0..h {
         for x in 0..w {
@@ -594,6 +647,96 @@ fn apply_rank_filter(img: &image::DynamicImage, size: u32, rank: u32) -> image::
             let idx = rank.min(rs.len() - 1);
             let a = rgba.get_pixel(x, y)[3];
             out.put_pixel(x, y, image::Rgba([rs[idx], gs[idx], bs[idx], a]));
+        }
+    }
+    image::DynamicImage::ImageRgba8(out)
+}
+
+fn apply_box_blur(img: &image::DynamicImage, radius: u32) -> image::DynamicImage {
+    if radius == 0 {
+        return img.clone();
+    }
+    let size = 2 * radius + 1;
+    let half = radius as i32;
+
+    // Preserve L mode
+    if matches!(img, image::DynamicImage::ImageLuma8(_)) {
+        let gray = img.to_luma8();
+        let (w, h) = gray.dimensions();
+        let mut out = image::GrayImage::new(w, h);
+        let n = (size * size) as f32;
+        for y in 0..h {
+            for x in 0..w {
+                let mut sum = 0.0f32;
+                for ky in -half..=half {
+                    for kx in -half..=half {
+                        let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
+                        let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
+                        sum += gray.get_pixel(sx, sy)[0] as f32;
+                    }
+                }
+                out.put_pixel(x, y, image::Luma([(sum / n) as u8]));
+            }
+        }
+        return image::DynamicImage::ImageLuma8(out);
+    }
+
+    // Preserve RGB mode
+    if matches!(img, image::DynamicImage::ImageRgb8(_)) {
+        let rgb = img.to_rgb8();
+        let (w, h) = rgb.dimensions();
+        let mut out = image::RgbImage::new(w, h);
+        let n = (size * size) as f32;
+        for y in 0..h {
+            for x in 0..w {
+                let mut r_sum = 0.0f32;
+                let mut g_sum = 0.0f32;
+                let mut b_sum = 0.0f32;
+                for ky in -half..=half {
+                    for kx in -half..=half {
+                        let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
+                        let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
+                        let p = rgb.get_pixel(sx, sy);
+                        r_sum += p[0] as f32;
+                        g_sum += p[1] as f32;
+                        b_sum += p[2] as f32;
+                    }
+                }
+                out.put_pixel(
+                    x,
+                    y,
+                    image::Rgb([(r_sum / n) as u8, (g_sum / n) as u8, (b_sum / n) as u8]),
+                );
+            }
+        }
+        return image::DynamicImage::ImageRgb8(out);
+    }
+
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut out = image::RgbaImage::new(w, h);
+    let n = (size * size) as f32;
+    for y in 0..h {
+        for x in 0..w {
+            let mut r_sum = 0.0f32;
+            let mut g_sum = 0.0f32;
+            let mut b_sum = 0.0f32;
+            for ky in -half..=half {
+                for kx in -half..=half {
+                    let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
+                    let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
+                    let p = rgba.get_pixel(sx, sy);
+                    r_sum += p[0] as f32;
+                    g_sum += p[1] as f32;
+                    b_sum += p[2] as f32;
+                }
+            }
+            let a = rgba.get_pixel(x, y)[3];
+            out.put_pixel(
+                x,
+                y,
+                image::Rgba([(r_sum / n) as u8, (g_sum / n) as u8, (b_sum / n) as u8, a]),
+            );
         }
     }
     image::DynamicImage::ImageRgba8(out)

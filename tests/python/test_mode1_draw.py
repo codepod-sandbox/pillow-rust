@@ -37,11 +37,11 @@ def test_convert_1_threshold_boundary():
     assert b.getpixel((3, 0)) == 255
 
 
-def test_convert_1_mode_is_l():
-    """Mode '1' is stored as L internally."""
+def test_convert_1_mode():
+    """Mode '1' conversion reports mode as '1'."""
     im = Image.new("L", (5, 5), 200)
     b = im.convert("1")
-    assert b.mode == "L"
+    assert b.mode == "1"
 
 
 # -- ImageDraw.point --------------------------------------------------------

@@ -90,6 +90,21 @@ def invert(image):
     return image.point(lut)
 
 
+def logical_and(image1, image2):
+    """Logical AND: both nonzero → 255, else 0."""
+    return _binop(image1, image2, lambda a, b: 255 if a and b else 0)
+
+
+def logical_or(image1, image2):
+    """Logical OR: either nonzero → 255, else 0."""
+    return _binop(image1, image2, lambda a, b: 255 if a or b else 0)
+
+
+def logical_xor(image1, image2):
+    """Logical XOR: exactly one nonzero → 255, else 0."""
+    return _binop(image1, image2, lambda a, b: 255 if bool(a) != bool(b) else 0)
+
+
 def constant(image, value):
     """Return L-mode image filled with a constant *value*, same size as input."""
     return ImageModule.new("L", image.size, value)

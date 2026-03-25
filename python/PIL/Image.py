@@ -143,6 +143,23 @@ def _resolve_color(color, mode):
 
 
 # ---------------------------------------------------------------------------
+# PixelAccess — returned by Image.load()
+# ---------------------------------------------------------------------------
+
+class PixelAccess:
+    """Pixel access object supporting px[x, y] read/write."""
+
+    def __init__(self, image):
+        self._image = image
+
+    def __getitem__(self, xy):
+        return self._image.getpixel(xy)
+
+    def __setitem__(self, xy, value):
+        self._image.putpixel(xy, value)
+
+
+# ---------------------------------------------------------------------------
 # Image class
 # ---------------------------------------------------------------------------
 
@@ -172,6 +189,8 @@ class Image:
     @property
     def mode(self):
         """Return the image mode string (e.g. 'RGB', 'RGBA', 'L')."""
+        if hasattr(self, '_mode_override') and self._mode_override is not None:
+            return self._mode_override
         return _pil_native.image_mode(self._handle)
 
     # -- pixel access -------------------------------------------------------
@@ -271,7 +290,13 @@ class Image:
         are counted.
         """
         if mask is None:
-            return list(_pil_native.image_histogram(self._handle))
+            h = list(_pil_native.image_histogram(self._handle))
+            # Mode "1" returns a 2-entry histogram [count_black, count_white]
+            if self.mode == "1":
+                black = h[0]
+                white = h[255]
+                return [black, white]
+            return h
         # Masked histogram: compute in Python
         data = self.getdata()
         m = self.mode
@@ -406,15 +431,57 @@ class Image:
         """Return a transposed copy (flip / rotate by 90-degree multiples)."""
         return Image(_pil_native.image_transpose(self._handle, method))
 
-    def convert(self, mode=None, **_kw):
+    def convert(self, mode=None, matrix=None, **_kw):
         """Return a copy converted to the given mode ('RGB', 'L', 'LA', 'RGBA', '1')."""
         if mode is None:
             mode = "RGB"
+        if matrix is not None:
+            return self._convert_with_matrix(mode, matrix)
         if mode == "1":
             # Binary mode: threshold at 128
-            gray = self if self.mode == "L" else Image(_pil_native.image_convert(self._handle, "L"))
-            return gray.point(lambda x: 255 if x >= 128 else 0)
+            gray = self if self.mode in ("L", "1") else Image(_pil_native.image_convert(self._handle, "L"))
+            out = gray.point(lambda x: 255 if x >= 128 else 0)
+            out._mode_override = "1"
+            return out
         return Image(_pil_native.image_convert(self._handle, mode))
+
+    def _convert_with_matrix(self, mode, matrix):
+        """Apply a color matrix transformation."""
+        src_mode = self.mode
+        w, h = self.size
+        matrix = list(matrix)
+
+        if mode == "L" and len(matrix) == 4:
+            # Single channel output: dot product of RGB with [r, g, b, offset]
+            rc, gc, bc, off = matrix
+            out = new("L", (w, h), 0)
+            for y in range(h):
+                for x in range(w):
+                    px = self.getpixel((x, y))
+                    if isinstance(px, (tuple, list)):
+                        r, g, b = px[0], px[1], px[2]
+                    else:
+                        r = g = b = int(px)
+                    v = int(rc * r + gc * g + bc * b + off)
+                    out.putpixel((x, y), max(0, min(255, v)))
+            return out
+        elif mode == "RGB" and len(matrix) == 12:
+            # 3x4 matrix: 3 channels, each with [r_coeff, g_coeff, b_coeff, offset]
+            out = new("RGB", (w, h), 0)
+            for y in range(h):
+                for x in range(w):
+                    px = self.getpixel((x, y))
+                    if isinstance(px, (tuple, list)):
+                        r, g, b = px[0], px[1], px[2]
+                    else:
+                        r = g = b = int(px)
+                    nr = int(matrix[0]*r + matrix[1]*g + matrix[2]*b + matrix[3])
+                    ng = int(matrix[4]*r + matrix[5]*g + matrix[6]*b + matrix[7])
+                    nb = int(matrix[8]*r + matrix[9]*g + matrix[10]*b + matrix[11])
+                    out.putpixel((x, y), (max(0, min(255, nr)), max(0, min(255, ng)), max(0, min(255, nb))))
+            return out
+        else:
+            raise ValueError(f"unsupported matrix conversion: {src_mode} -> {mode} with {len(matrix)} matrix values")
 
     def transform(self, size, method, data=None, resample=0, fill=1, fillcolor=None):
         """Apply a geometric transform and return a new image."""
@@ -606,8 +673,8 @@ class Image:
     # -- stubs for compatibility -------------------------------------------
 
     def load(self):
-        """No-op — pixels are always loaded in our implementation."""
-        pass
+        """Return a pixel access object supporting px[x, y] and px[x, y] = v."""
+        return PixelAccess(self)
 
     def show(self, title=None):
         """No-op — display is not available in sandbox."""
@@ -733,7 +800,9 @@ def new(mode, size, color=0):
             from PIL import ImageColor
             color = ImageColor.getcolor(color, "1")
         fill = 255 if color else 0
-        return Image(_pil_native.image_new("L", size[0], size[1], [fill]))
+        im = Image(_pil_native.image_new("L", size[0], size[1], [fill]))
+        im._mode_override = "1"
+        return im
     if isinstance(color, str):
         # Named color support: "red", "#ff0000", "rgb(255,0,0)", etc.
         from PIL import ImageColor

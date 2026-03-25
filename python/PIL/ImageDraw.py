@@ -18,7 +18,7 @@ class ImageDraw:
         *xy* is either ``[(x0, y0), (x1, y1)]`` or ``[x0, y0, x1, y1]``.
         """
         coords = _normalise_box(xy)
-        color = fill or outline or (255, 255, 255)
+        color = fill if fill is not None else (outline if outline is not None else (255, 255, 255))
         if isinstance(color, int):
             color = (color, color, color)
         _pil_native.draw_rectangle(
@@ -31,7 +31,7 @@ class ImageDraw:
         *xy* is either ``[(x0, y0), (x1, y1)]`` or ``[x0, y0, x1, y1]``.
         """
         coords = _normalise_box(xy)
-        color = fill or outline or (255, 255, 255)
+        color = fill if fill is not None else (outline if outline is not None else (255, 255, 255))
         if isinstance(color, int):
             color = (color, color, color)
         _pil_native.draw_ellipse(
@@ -44,7 +44,7 @@ class ImageDraw:
         *xy* is ``[(x0, y0), (x1, y1)]`` or ``[x0, y0, x1, y1]``.
         """
         coords = _normalise_xy(xy)
-        color = fill or (255, 255, 255)
+        color = fill if fill is not None else (255, 255, 255)
         if isinstance(color, int):
             color = (color, color, color)
         _pil_native.draw_line(self._image._handle, list(coords), list(color), width)
@@ -82,7 +82,7 @@ class ImageDraw:
         *xy* is a flat list ``[x0, y0, x1, y1, ...]`` or list of tuples
         ``[(x0, y0), (x1, y1), ...]``.
         """
-        color = fill or (255, 255, 255)
+        color = fill if fill is not None else (255, 255, 255)
         if isinstance(color, int):
             color = (color,)
         elif isinstance(color, tuple):
@@ -98,7 +98,7 @@ class ImageDraw:
         *xy* is the bounding box ``[(x0,y0),(x1,y1)]`` or ``[x0,y0,x1,y1]``.
         """
         coords = _normalise_box(xy)
-        color = fill or (255, 255, 255)
+        color = fill if fill is not None else (255, 255, 255)
         if isinstance(color, int):
             color = (color, color, color)
         _pil_native.draw_arc(
@@ -111,7 +111,7 @@ class ImageDraw:
         *xy* is the bounding box.
         """
         coords = _normalise_box(xy)
-        color = fill or outline or (255, 255, 255)
+        color = fill if fill is not None else (outline if outline is not None else (255, 255, 255))
         if isinstance(color, int):
             color = (color, color, color)
         _pil_native.draw_pieslice(
@@ -151,7 +151,7 @@ class ImageDraw:
         *font* — a FreeTypeFont (TrueType or bitmap fallback).
         *anchor* — ``"left"`` (default), ``"center"``, or ``"right"``.
         """
-        color = fill or (255, 255, 255)
+        color = fill if fill is not None else (255, 255, 255)
         if isinstance(color, str):
             color = _getrgb(color)
         if isinstance(color, int):
@@ -239,7 +239,7 @@ class ImageDraw:
     def multiline_text(self, xy, text, fill=None, font=None, anchor=None,
                        spacing=4, align="left", **kwargs):
         """Draw multi-line text, splitting on newlines."""
-        color = fill or (255, 255, 255)
+        color = fill if fill is not None else (255, 255, 255)
         if isinstance(color, int):
             color = (color, color, color)
         if font and hasattr(font, '_handle') and font._handle is not None:

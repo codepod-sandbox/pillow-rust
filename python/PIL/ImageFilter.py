@@ -96,3 +96,10 @@ class MaxFilter(Filter):
 
     def __init__(self, size=3):
         super().__init__("max_filter", [float(size)])
+
+
+class BoxBlur(Filter):
+    """Box blur with configurable *radius* (average over a (2r+1)x(2r+1) window)."""
+
+    def __init__(self, radius=1):
+        super().__init__("box_blur", [float(radius)])

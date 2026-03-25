@@ -36,6 +36,22 @@ test_files = [
     "test_imagechops_values",
     "test_image_getdata_upstream",
     "test_imageops_values",
+    "test_image_point_upstream",
+    "test_image_putalpha_upstream",
+    "test_image_filter_extra",
+    "test_image_convert_matrix",
+    "test_image_split_merge",
+    "test_imageops_flip",
+    "test_image_access",
+    "test_image_transform_modes",
+    "test_image_histogram",
+    "test_image_info",
+    "test_image_frombytes",
+    "test_imagechops_extra",
+    "test_imageenhance_extra",
+    "test_imagedraw_text",
+    "test_image_getchannel",
+    "test_image_resize_exact",
 ]
 
 total_pass = 0
