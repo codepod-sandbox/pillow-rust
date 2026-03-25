@@ -413,12 +413,12 @@ def getcolor(color, mode):
     """
     rgb = getrgb(color)
     if mode == "L" or mode == "1":
-        # BT.709 luma (matches our Rust image crate convert)
+        # BT.601 luma (matches Pillow's fixed-point: r*19595+g*38470+b*7471 >> 16)
         r, g, b = rgb[0], rgb[1], rgb[2]
-        return int(0.2126 * r + 0.7152 * g + 0.0722 * b + 0.5)
+        return (r * 19595 + g * 38470 + b * 7471 + 0x8000) >> 16
     if mode == "LA":
         r, g, b = rgb[0], rgb[1], rgb[2]
-        l = int(0.2126 * r + 0.7152 * g + 0.0722 * b + 0.5)
+        l = (r * 19595 + g * 38470 + b * 7471 + 0x8000) >> 16
         a = rgb[3] if len(rgb) == 4 else 255
         return (l, a)
     if mode == "RGB":

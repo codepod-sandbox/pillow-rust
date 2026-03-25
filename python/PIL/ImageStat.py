@@ -14,11 +14,10 @@ class Stat:
     def __init__(self, image_or_list, mask=None):
         if isinstance(image_or_list, list):
             self.h = image_or_list
-        elif mask is not None:
-            # Histogram with mask not supported — fall back to full image
-            self.h = image_or_list.histogram()
+        elif hasattr(image_or_list, "histogram"):
+            self.h = image_or_list.histogram(mask)
         else:
-            self.h = image_or_list.histogram()
+            raise TypeError(f"expected image or list, got {type(image_or_list).__name__}")
 
         # Determine number of bands
         if len(self.h) == 256:

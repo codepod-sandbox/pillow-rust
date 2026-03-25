@@ -349,12 +349,57 @@ pub fn transform_perspective(
 // Mode conversion
 // ---------------------------------------------------------------------------
 
+/// BT.601 (Pillow-compatible) luma from RGB bytes: r*19595 + g*38470 + b*7471 >> 16
+#[inline]
+fn bt601_luma(r: u8, g: u8, b: u8) -> u8 {
+    let l = (r as u32 * 19595 + g as u32 * 38470 + b as u32 * 7471 + 0x8000) >> 16;
+    l as u8
+}
+
 pub fn convert(handle: &ImageHandle, target_mode: &str) -> Result<ImageHandle> {
+    let (w, h) = handle.inner.dimensions();
     let img = match target_mode {
         "RGB" => DynamicImage::ImageRgb8(handle.inner.to_rgb8()),
         "RGBA" => DynamicImage::ImageRgba8(handle.inner.to_rgba8()),
-        "L" => DynamicImage::ImageLuma8(handle.inner.to_luma8()),
-        "LA" => DynamicImage::ImageLumaA8(handle.inner.to_luma_alpha8()),
+        "L" => {
+            // Use BT.601 coefficients to match Pillow's behavior
+            match &handle.inner {
+                DynamicImage::ImageLuma8(buf) => DynamicImage::ImageLuma8(buf.clone()),
+                DynamicImage::ImageLumaA8(buf) => {
+                    let out =
+                        ImageBuffer::from_fn(w, h, |x, y| image::Luma([buf.get_pixel(x, y)[0]]));
+                    DynamicImage::ImageLuma8(out)
+                }
+                _ => {
+                    let rgba = handle.inner.to_rgba8();
+                    let out = ImageBuffer::from_fn(w, h, |x, y| {
+                        let p = rgba.get_pixel(x, y);
+                        image::Luma([bt601_luma(p[0], p[1], p[2])])
+                    });
+                    DynamicImage::ImageLuma8(out)
+                }
+            }
+        }
+        "LA" => {
+            // Use BT.601 coefficients to match Pillow's behavior
+            match &handle.inner {
+                DynamicImage::ImageLumaA8(buf) => DynamicImage::ImageLumaA8(buf.clone()),
+                DynamicImage::ImageLuma8(buf) => {
+                    let out = ImageBuffer::from_fn(w, h, |x, y| {
+                        image::LumaA([buf.get_pixel(x, y)[0], 255])
+                    });
+                    DynamicImage::ImageLumaA8(out)
+                }
+                _ => {
+                    let rgba = handle.inner.to_rgba8();
+                    let out = ImageBuffer::from_fn(w, h, |x, y| {
+                        let p = rgba.get_pixel(x, y);
+                        image::LumaA([bt601_luma(p[0], p[1], p[2]), p[3]])
+                    });
+                    DynamicImage::ImageLumaA8(out)
+                }
+            }
+        }
         _ => return Err(PilError::UnsupportedMode(target_mode.to_string())),
     };
     Ok(ImageHandle { inner: img })

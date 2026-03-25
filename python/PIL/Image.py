@@ -727,6 +727,13 @@ def open(fp, mode="r"):
 
 def new(mode, size, color=0):
     """Create a new image with the given *mode* and *size*."""
+    # Mode "1" (binary) is stored as L with values 0 or 255
+    if mode == "1":
+        if isinstance(color, str):
+            from PIL import ImageColor
+            color = ImageColor.getcolor(color, "1")
+        fill = 255 if color else 0
+        return Image(_pil_native.image_new("L", size[0], size[1], [fill]))
     if isinstance(color, str):
         # Named color support: "red", "#ff0000", "rgb(255,0,0)", etc.
         from PIL import ImageColor
