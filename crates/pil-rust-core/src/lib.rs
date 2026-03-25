@@ -538,6 +538,155 @@ pub fn draw_polygon(handle: &mut ImageHandle, points: &[i32], color: [u8; 4], fi
     }
 }
 
+// ---------------------------------------------------------------------------
+// Arc / chord / pieslice
+// ---------------------------------------------------------------------------
+//
+// Angles are in degrees, measured clockwise from 3 o'clock (positive x-axis),
+// matching Pillow's convention (y increases downward).
+
+/// Compute arc sample points on the ellipse for the angle range [start, end].
+/// Returns enough points for a smooth curve (≥ 1 step per pixel of arc length).
+fn arc_points(cx: f64, cy: f64, rx: f64, ry: f64, start: f64, end: f64) -> Vec<(i32, i32)> {
+    use std::f64::consts::PI;
+    let angle_range = end - start;
+    if angle_range <= 0.0 {
+        return Vec::new();
+    }
+    // Approximate arc length to decide step count
+    let circumference = PI * (rx + ry); // Ramanujan approximation for full ellipse
+    let full_steps = (circumference as usize).max(4);
+    let steps = ((full_steps as f64 * angle_range / 360.0) as usize).max(1);
+    (0..=steps)
+        .map(|i| {
+            let a = (start + i as f64 * angle_range / steps as f64) * PI / 180.0;
+            let px = (cx + rx * a.cos()).round() as i32;
+            let py = (cy + ry * a.sin()).round() as i32;
+            (px, py)
+        })
+        .collect()
+}
+
+/// Draw an arc (portion of an ellipse outline) from `start` to `end` degrees.
+///
+/// Angles increase clockwise; 0° is 3 o'clock.  If `end <= start` the arc
+/// wraps around (360° is added to `end`).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_arc(
+    handle: &mut ImageHandle,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    start: f64,
+    mut end: f64,
+    color: [u8; 4],
+) {
+    let cx = (x0 + x1) as f64 / 2.0;
+    let cy = (y0 + y1) as f64 / 2.0;
+    let rx = (x1 - x0) as f64 / 2.0;
+    let ry = (y1 - y0) as f64 / 2.0;
+    if rx <= 0.0 || ry <= 0.0 {
+        return;
+    }
+    if end <= start {
+        end += 360.0;
+    }
+    let pts = arc_points(cx, cy, rx, ry, start, end);
+    for w in pts.windows(2) {
+        draw_line(handle, w[0].0, w[0].1, w[1].0, w[1].1, color, 1);
+    }
+}
+
+/// Draw a chord: the region bounded by an arc and the straight line connecting
+/// its endpoints.  `fill=true` fills the region; `fill=false` draws the outline.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_chord(
+    handle: &mut ImageHandle,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    start: f64,
+    mut end: f64,
+    color: [u8; 4],
+    fill: bool,
+) {
+    let cx = (x0 + x1) as f64 / 2.0;
+    let cy = (y0 + y1) as f64 / 2.0;
+    let rx = (x1 - x0) as f64 / 2.0;
+    let ry = (y1 - y0) as f64 / 2.0;
+    if rx <= 0.0 || ry <= 0.0 {
+        return;
+    }
+    if end <= start {
+        end += 360.0;
+    }
+    let pts = arc_points(cx, cy, rx, ry, start, end);
+    if fill {
+        // Polygon from arc points (closing segment is implicit in draw_polygon)
+        let flat: Vec<i32> = pts.iter().flat_map(|(x, y)| [*x, *y]).collect();
+        draw_polygon(handle, &flat, color, true);
+    } else {
+        // Arc outline + chord closing line
+        for w in pts.windows(2) {
+            draw_line(handle, w[0].0, w[0].1, w[1].0, w[1].1, color, 1);
+        }
+        if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+            draw_line(handle, last.0, last.1, first.0, first.1, color, 1);
+        }
+    }
+}
+
+/// Draw a pieslice: the region bounded by an arc and two radial lines to the
+/// ellipse centre.  `fill=true` fills the region; `fill=false` draws the outline.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_pieslice(
+    handle: &mut ImageHandle,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    start: f64,
+    mut end: f64,
+    color: [u8; 4],
+    fill: bool,
+) {
+    let cx = (x0 + x1) as f64 / 2.0;
+    let cy = (y0 + y1) as f64 / 2.0;
+    let rx = (x1 - x0) as f64 / 2.0;
+    let ry = (y1 - y0) as f64 / 2.0;
+    if rx <= 0.0 || ry <= 0.0 {
+        return;
+    }
+    if end <= start {
+        end += 360.0;
+    }
+    let cx_i = cx.round() as i32;
+    let cy_i = cy.round() as i32;
+    let pts = arc_points(cx, cy, rx, ry, start, end);
+    if fill {
+        // Polygon: centre point + arc points
+        let mut flat = vec![cx_i, cy_i];
+        for (x, y) in &pts {
+            flat.push(*x);
+            flat.push(*y);
+        }
+        draw_polygon(handle, &flat, color, true);
+    } else {
+        // Arc outline + two radial lines from centre
+        for w in pts.windows(2) {
+            draw_line(handle, w[0].0, w[0].1, w[1].0, w[1].1, color, 1);
+        }
+        if let Some(first) = pts.first() {
+            draw_line(handle, cx_i, cy_i, first.0, first.1, color, 1);
+        }
+        if let Some(last) = pts.last() {
+            draw_line(handle, cx_i, cy_i, last.0, last.1, color, 1);
+        }
+    }
+}
+
 /// 8×16 monospace bitmap font covering ASCII 32–126 (95 glyphs).
 /// Each glyph is 16 bytes (one byte per row, 8 pixels wide).
 #[rustfmt::skip]

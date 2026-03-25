@@ -5,28 +5,67 @@ PIL.ImageOps — ready-made image processing operations.
 from PIL import Image
 
 
-def autocontrast(image, cutoff=0, ignore=None):
-    """Maximize image contrast by remapping pixel values to span 0-255."""
+def autocontrast(image, cutoff=0, ignore=None, mask=None, preserve_tone=False):
+    """Maximize image contrast by remapping pixel values to span 0-255.
+
+    *cutoff* percent of lightest/darkest pixels are removed from the
+    histogram before computing the remap.  Can be a single value or a
+    ``(low, high)`` tuple.
+
+    If *preserve_tone* is ``True``, a single LUT (derived from the first
+    channel) is applied identically to every channel so relative tones
+    are preserved.
+
+    *mask* is an optional ``"L"`` image; only pixels where the mask is
+    non-zero are used to compute the histogram.
+    """
     if image.mode not in ("L", "RGB"):
         raise OSError(f"not supported for {image.mode!r} images")
-    bands = image.getbands()
-    if len(bands) == 1:
-        # Single channel
-        extrema = image.getextrema()
-        lo, hi = extrema
-        if lo >= hi:
-            return image.point(lambda x: 0)
+
+    histogram = image.histogram(mask)
+    num_channels = len(histogram) // 256
+
+    lut = []
+    for layer in range(num_channels):
+        h = histogram[layer * 256 : (layer + 1) * 256]
+        if cutoff:
+            if isinstance(cutoff, (list, tuple)):
+                cut_lo_pct, cut_hi_pct = cutoff[0], cutoff[1]
+            else:
+                cut_lo_pct = cut_hi_pct = cutoff
+            n = sum(h)
+            cut_lo = n * cut_lo_pct // 100
+            cut_hi = n * cut_hi_pct // 100
+            lo = 0
+            for lo in range(256):
+                cut_lo -= h[lo]
+                if cut_lo < 0:
+                    break
+            hi = 255
+            for hi in range(255, -1, -1):
+                cut_hi -= h[hi]
+                if cut_hi < 0:
+                    break
+        else:
+            lo = 0
+            hi = 255
+            while lo < 256 and not h[lo]:
+                lo += 1
+            while hi >= 0 and not h[hi]:
+                hi -= 1
+        if hi <= lo:
+            lut.extend(range(256))
+            continue
         scale = 255.0 / (hi - lo)
-        offset = lo
-        lut = [max(0, min(255, int((i - offset) * scale))) for i in range(256)]
-        return image.point(lut)
-    else:
-        # Multi-channel: split, autocontrast each, merge
-        channels = image.split()
-        result_channels = []
-        for ch in channels:
-            result_channels.append(autocontrast(ch))
-        return Image.merge(image.mode, result_channels)
+        offset = -lo * scale
+        for ix in range(256):
+            v = int(ix * scale + offset)
+            lut.append(max(0, min(255, v)))
+
+    if preserve_tone:
+        lut = lut[:256] * num_channels
+
+    return image.point(lut)
 
 
 def contain(image, size, method=None):

@@ -74,6 +74,70 @@ class ImageDraw:
                 self._image._handle, list(coords), [255, 255, 255], False
             )
 
+    def arc(self, xy, start, end, fill=None, width=1):
+        """Draw an arc (portion of ellipse outline) between *start* and *end* degrees.
+
+        *xy* is the bounding box ``[(x0,y0),(x1,y1)]`` or ``[x0,y0,x1,y1]``.
+        Angles are in degrees, clockwise from 3 o'clock.
+        """
+        coords = _normalise_box(xy)
+        color = fill or (255, 255, 255)
+        if isinstance(color, int):
+            color = (color, color, color)
+        _pil_native.draw_arc(
+            self._image._handle, list(coords), float(start), float(end), list(color)
+        )
+
+    def chord(self, xy, start, end, fill=None, outline=None, width=1):
+        """Draw a chord: arc + straight line closing the endpoints.
+
+        *fill* floods the enclosed region; *outline* draws the boundary.
+        """
+        coords = _normalise_box(xy)
+        if fill is not None:
+            color = fill
+            if isinstance(color, int):
+                color = (color, color, color)
+            _pil_native.draw_chord(
+                self._image._handle, list(coords), float(start), float(end), list(color), True
+            )
+        if outline is not None:
+            color = outline
+            if isinstance(color, int):
+                color = (color, color, color)
+            _pil_native.draw_chord(
+                self._image._handle, list(coords), float(start), float(end), list(color), False
+            )
+        if fill is None and outline is None:
+            _pil_native.draw_chord(
+                self._image._handle, list(coords), float(start), float(end), [255, 255, 255], False
+            )
+
+    def pieslice(self, xy, start, end, fill=None, outline=None, width=1):
+        """Draw a pieslice: arc + two radial lines from the centre.
+
+        *fill* floods the slice; *outline* draws the boundary.
+        """
+        coords = _normalise_box(xy)
+        if fill is not None:
+            color = fill
+            if isinstance(color, int):
+                color = (color, color, color)
+            _pil_native.draw_pieslice(
+                self._image._handle, list(coords), float(start), float(end), list(color), True
+            )
+        if outline is not None:
+            color = outline
+            if isinstance(color, int):
+                color = (color, color, color)
+            _pil_native.draw_pieslice(
+                self._image._handle, list(coords), float(start), float(end), list(color), False
+            )
+        if fill is None and outline is None:
+            _pil_native.draw_pieslice(
+                self._image._handle, list(coords), float(start), float(end), [255, 255, 255], False
+            )
+
     def text(self, xy, text, fill=None, font=None, anchor=None):
         """Draw text at the given position.
 

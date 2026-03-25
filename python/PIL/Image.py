@@ -478,6 +478,54 @@ class Image:
             fill_im = new(self.mode, (box[2] - box[0], box[3] - box[1]), im_or_color)
             _pil_native.image_paste(self._handle, fill_im._handle, box[0], box[1])
 
+    def alpha_composite(self, src, dest=(0, 0), source=None):
+        """Composite *src* over this image in-place.
+
+        *dest* is the (x, y) offset into this image where compositing starts.
+        *source* is the optional (x, y) or (x, y, w, h) crop of *src* to use.
+        """
+        if not isinstance(dest, (tuple, list)) or len(dest) < 2:
+            raise ValueError("dest must be a sequence of 2 integers")
+        if source is not None:
+            if not isinstance(source, (tuple, list)):
+                raise ValueError("source must be a sequence")
+            if len(source) == 2:
+                src = src.crop((source[0], source[1], src.width, src.height))
+            elif len(source) == 4:
+                if source[1] < 0 or source[3] < 0:
+                    raise ValueError("source coordinates cannot be negative")
+                src = src.crop(source)
+            else:
+                raise ValueError("source must be 2 or 4 values")
+        dx, dy = int(dest[0]), int(dest[1])
+        # Determine the overlapping region
+        sw, sh = src.size
+        dw, dh = self.size
+        # Clip to destination bounds
+        src_x0 = max(-dx, 0)
+        src_y0 = max(-dy, 0)
+        src_x1 = min(sw, dw - dx)
+        src_y1 = min(sh, dh - dy)
+        if src_x1 <= src_x0 or src_y1 <= src_y0:
+            return
+        # Crop the src and dst regions that overlap
+        src_region = src.crop((src_x0, src_y0, src_x1, src_y1))
+        dst_x = dx + src_x0
+        dst_y = dy + src_y0
+        region_w = src_x1 - src_x0
+        region_h = src_y1 - src_y0
+        dst_region = self.crop((dst_x, dst_y, dst_x + region_w, dst_y + region_h))
+        # Ensure both are RGBA for compositing
+        if dst_region.mode != "RGBA":
+            dst_region = dst_region.convert("RGBA")
+        if src_region.mode != "RGBA":
+            src_region = src_region.convert("RGBA")
+        composited = alpha_composite(dst_region, src_region)
+        # Paste result back
+        if self.mode != "RGBA":
+            composited = composited.convert(self.mode)
+        _pil_native.image_paste(self._handle, composited._handle, dst_x, dst_y)
+
     def putalpha(self, alpha):
         """Set the alpha channel from an 'L' image or int value."""
         if self.mode != "RGBA":
@@ -502,13 +550,20 @@ class Image:
 
     # -- statistics ---------------------------------------------------------
 
-    def histogram(self):
-        """Return a histogram of pixel values (list of 256 * bands ints)."""
+    def histogram(self, mask=None):
+        """Return a histogram of pixel values (list of 256 * bands ints).
+
+        If *mask* is given (an ``"L"`` image), only pixels where mask > 0
+        are counted.
+        """
         data = self.getdata()
         m = self.mode
         bands = len(_MODE_BANDS.get(m, ("R", "G", "B")))
         hist = [0] * (256 * bands)
-        for px in data:
+        mask_data = mask.getdata() if mask is not None else None
+        for i, px in enumerate(data):
+            if mask_data is not None and mask_data[i] == 0:
+                continue
             if isinstance(px, (tuple, list)):
                 for b in range(bands):
                     hist[b * 256 + (px[b] & 0xFF)] += 1
@@ -655,6 +710,39 @@ def merge(mode, channels):
     """Merge a sequence of single-band images into a multi-band image."""
     channel_ids = [ch._handle for ch in channels]
     return Image(_pil_native.image_merge(mode, channel_ids))
+
+
+def alpha_composite(dst, src):
+    """Porter-Duff 'over' compositing.  Both *dst* and *src* must be RGBA.
+
+    Returns a new RGBA image with *src* composited over *dst*.
+    """
+    if dst.mode != "RGBA" or src.mode != "RGBA":
+        raise ValueError("alpha_composite requires RGBA images")
+    if dst.size != src.size:
+        raise ValueError("images do not match in size")
+    dst_bytes = bytearray(dst.tobytes())
+    src_bytes = bytearray(src.tobytes())
+    n = len(dst_bytes) // 4
+    for i in range(n):
+        off = i * 4
+        sr, sg, sb, sa = src_bytes[off], src_bytes[off + 1], src_bytes[off + 2], src_bytes[off + 3]
+        dr, dg, db, da = dst_bytes[off], dst_bytes[off + 1], dst_bytes[off + 2], dst_bytes[off + 3]
+        if sa == 255:
+            dst_bytes[off:off + 4] = bytes([sr, sg, sb, 255])
+        elif sa > 0:
+            sa_f = sa / 255.0
+            da_f = da / 255.0
+            out_a = sa_f + da_f * (1.0 - sa_f)
+            if out_a > 0.0:
+                inv = (1.0 - sa_f) * da_f / out_a
+                dst_bytes[off] = min(255, round(sr * (sa_f / out_a) + dr * inv))
+                dst_bytes[off + 1] = min(255, round(sg * (sa_f / out_a) + dg * inv))
+                dst_bytes[off + 2] = min(255, round(sb * (sa_f / out_a) + db * inv))
+                dst_bytes[off + 3] = min(255, round(out_a * 255.0))
+    out = new("RGBA", dst.size, 0)
+    _pil_native.image_putdata(out._handle, list(dst_bytes))
+    return out
 
 
 def getmodebands(mode):

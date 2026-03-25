@@ -373,6 +373,65 @@ pub mod _pil_native {
             .map_err(|e| vm.new_value_error(e))
     }
 
+    #[pyfunction]
+    fn draw_arc(
+        handle_id: usize,
+        xy: Vec<i32>,
+        start: f64,
+        end: f64,
+        color: PyObjectRef,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        if xy.len() < 4 {
+            return Err(vm.new_value_error("arc xy must have 4 values".to_string()));
+        }
+        let c = extract_color_rgba(&color, vm)?;
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_arc(h, xy[0], xy[1], xy[2], xy[3], start, end, c)
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn draw_chord(
+        handle_id: usize,
+        xy: Vec<i32>,
+        start: f64,
+        end: f64,
+        color: PyObjectRef,
+        fill: bool,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        if xy.len() < 4 {
+            return Err(vm.new_value_error("chord xy must have 4 values".to_string()));
+        }
+        let c = extract_color_rgba(&color, vm)?;
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_chord(h, xy[0], xy[1], xy[2], xy[3], start, end, c, fill)
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn draw_pieslice(
+        handle_id: usize,
+        xy: Vec<i32>,
+        start: f64,
+        end: f64,
+        color: PyObjectRef,
+        fill: bool,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        if xy.len() < 4 {
+            return Err(vm.new_value_error("pieslice xy must have 4 values".to_string()));
+        }
+        let c = extract_color_rgba(&color, vm)?;
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_pieslice(h, xy[0], xy[1], xy[2], xy[3], start, end, c, fill)
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
     // -- frombytes ---------------------------------------------------------
 
     #[pyfunction]

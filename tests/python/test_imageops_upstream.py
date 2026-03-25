@@ -34,10 +34,11 @@ def test_autocontrast_RGB():
 
 
 def test_autocontrast_flat():
-    """All same value — should not crash, all pixels become 0."""
+    """All same value — should not crash; passthrough (no range to expand)."""
     im = Image.new("L", (10, 10), 128)
     out = ImageOps.autocontrast(im)
-    assert out.getpixel((0, 0)) == 0
+    # Upstream behavior: when lo == hi, return passthrough (no mapping)
+    assert out.getpixel((0, 0)) == 128
 
 
 # --- contain ---
@@ -297,6 +298,60 @@ def test_autocontrast_unsupported_mode():
     im = Image.new("RGBA", (1, 1))
     with pytest.raises(OSError):
         ImageOps.autocontrast(im)
+
+
+def test_autocontrast_cutoff():
+    """cutoff=N and cutoff=(N,N) should produce identical results."""
+    im = Image.new("L", (10, 10), 128)
+    im.putpixel((0, 0), 0)
+    im.putpixel((9, 9), 255)
+    out1 = ImageOps.autocontrast(im, cutoff=10)
+    out2 = ImageOps.autocontrast(im, cutoff=(10, 10))
+    assert out1.tobytes() == out2.tobytes()
+
+
+def test_autocontrast_cutoff_asymmetric():
+    """Asymmetric cutoff tuple cuts low and high separately."""
+    im = Image.new("L", (10, 10), 128)
+    out = ImageOps.autocontrast(im, cutoff=(5, 0))
+    assert out.mode == "L"
+
+
+def test_autocontrast_preserve_tone():
+    """preserve_tone=True applies a single LUT to all channels."""
+    im = Image.new("RGB", (10, 10), (100, 150, 200))
+    im.putpixel((0, 0), (50, 50, 50))
+    im.putpixel((9, 9), (220, 220, 220))
+    out = ImageOps.autocontrast(im, preserve_tone=True)
+    assert out.mode == "RGB"
+    assert out.size == (10, 10)
+
+
+def test_autocontrast_preserve_one_color():
+    """Single-color image with preserve_tone should not crash."""
+    im = Image.new("RGB", (10, 10), (100, 100, 100))
+    out = ImageOps.autocontrast(im, preserve_tone=True)
+    assert out.mode == "RGB"
+
+
+def test_autocontrast_preserve_gradient():
+    """Gradient image with preserve_tone maps extremes to 0 and 255."""
+    im = Image.new("RGB", (256, 1))
+    for x in range(256):
+        im.putpixel((x, 0), (x, x, x))
+    out = ImageOps.autocontrast(im, preserve_tone=True)
+    assert out.mode == "RGB"
+    assert out.getpixel((0, 0)) == (0, 0, 0)
+    assert out.getpixel((255, 0)) == (255, 255, 255)
+
+
+def test_autocontrast_mask_zero():
+    """mask=all-zeros histogram is empty; output should be all-zero."""
+    im = Image.new("L", (10, 10), 128)
+    mask = Image.new("L", (10, 10), 0)
+    out = ImageOps.autocontrast(im, mask=mask)
+    # No pixels counted → lut stays 0..255 passthrough
+    assert out.mode == "L"
 
 
 # --- fit edge cases ---

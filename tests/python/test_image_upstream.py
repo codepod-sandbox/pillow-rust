@@ -424,3 +424,62 @@ def test_open_save_roundtrip(tmp_path):
     im2 = Image.open(path)
     assert im2.size == (10, 10)
     assert im2.getpixel((0, 0)) == (77, 88, 99)
+
+
+# ---------------------------------------------------------------------------
+# alpha_composite
+# ---------------------------------------------------------------------------
+
+def test_alpha_composite_opaque_src():
+    """Opaque src replaces dst completely."""
+    dst = Image.new("RGBA", (2, 2), (0, 0, 255, 255))
+    src = Image.new("RGBA", (2, 2), (255, 0, 0, 255))
+    out = Image.alpha_composite(dst, src)
+    assert out.getpixel((0, 0)) == (255, 0, 0, 255)
+
+
+def test_alpha_composite_transparent_src():
+    """Fully transparent src leaves dst unchanged."""
+    dst = Image.new("RGBA", (2, 2), (0, 0, 255, 200))
+    src = Image.new("RGBA", (2, 2), (255, 0, 0, 0))
+    out = Image.alpha_composite(dst, src)
+    px = out.getpixel((0, 0))
+    assert px == (0, 0, 255, 200)
+
+
+def test_alpha_composite_returns_new_image():
+    """alpha_composite does not modify dst in place."""
+    dst = Image.new("RGBA", (2, 2), (0, 0, 255, 255))
+    src = Image.new("RGBA", (2, 2), (255, 0, 0, 128))
+    original_bytes = dst.tobytes()
+    out = Image.alpha_composite(dst, src)
+    assert dst.tobytes() == original_bytes
+    assert out is not dst
+
+
+def test_alpha_composite_requires_rgba():
+    """alpha_composite raises for non-RGBA images."""
+    dst = Image.new("RGB", (2, 2))
+    src = Image.new("RGBA", (2, 2))
+    with pytest.raises(ValueError):
+        Image.alpha_composite(dst, src)
+
+
+def test_alpha_composite_instance_method():
+    """Image.alpha_composite(src) instance form works."""
+    dst = Image.new("RGBA", (10, 10), (0, 0, 255, 255))
+    src = Image.new("RGBA", (5, 5), (255, 0, 0, 255))
+    dst.alpha_composite(src, dest=(2, 2))
+    assert dst.getpixel((2, 2)) == (255, 0, 0, 255)
+    assert dst.getpixel((0, 0)) == (0, 0, 255, 255)
+
+
+def test_alpha_composite_half_alpha():
+    """50% alpha src blends with dst."""
+    dst = Image.new("RGBA", (2, 2), (0, 0, 0, 255))
+    src = Image.new("RGBA", (2, 2), (200, 0, 0, 128))
+    out = Image.alpha_composite(dst, src)
+    px = out.getpixel((0, 0))
+    # Result should be reddish with full alpha
+    assert px[3] == 255
+    assert px[0] > 50  # some red blended in
