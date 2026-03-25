@@ -4,16 +4,36 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use pil_rust_core::ImageHandle;
+use pil_rust_core::{FontHandle, ImageHandle};
 
 // ---------------------------------------------------------------------------
-// Handle management — thread-local map of image handles
+// Handle management — thread-local map of image and font handles
 // ---------------------------------------------------------------------------
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 thread_local! {
     static IMAGES: RefCell<HashMap<usize, ImageHandle>> = RefCell::new(HashMap::new());
+    static FONTS: RefCell<HashMap<usize, FontHandle>> = RefCell::new(HashMap::new());
+}
+
+fn alloc_font(handle: FontHandle) -> usize {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    FONTS.with(|m| m.borrow_mut().insert(id, handle));
+    id
+}
+
+fn with_font<F, R>(id: usize, f: F) -> Result<R, String>
+where
+    F: FnOnce(&FontHandle) -> R,
+{
+    FONTS.with(|m| {
+        let map = m.borrow();
+        let h = map
+            .get(&id)
+            .ok_or_else(|| format!("invalid font handle: {id}"))?;
+        Ok(f(h))
+    })
 }
 
 fn alloc(handle: ImageHandle) -> usize {
@@ -94,19 +114,21 @@ pub mod _pil_native {
     // -- Encode / decode ---------------------------------------------------
 
     #[pyfunction]
-    fn image_save(
+    fn image_save(handle_id: usize, format: String, vm: &VirtualMachine) -> PyResult<Vec<u8>> {
+        with(handle_id, |h| pil_rust_core::save(h, &format))
+            .map_err(|e| vm.new_value_error(e))?
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn image_save_with_quality(
         handle_id: usize,
         format: String,
-        quality: vm::function::OptionalArg<u8>,
+        quality: u8,
         vm: &VirtualMachine,
     ) -> PyResult<Vec<u8>> {
-        let q = quality.into_option();
         with(handle_id, |h| {
-            if let Some(q) = q {
-                pil_rust_core::save_with_quality(h, &format, q)
-            } else {
-                pil_rust_core::save(h, &format)
-            }
+            pil_rust_core::save_with_options(h, &format, Some(quality))
         })
         .map_err(|e| vm.new_value_error(e))?
         .map_err(|e| vm.new_value_error(e.to_string()))
@@ -360,6 +382,149 @@ pub mod _pil_native {
         .map_err(|e| vm.new_value_error(e))
     }
 
+    // -- Paste -------------------------------------------------------------
+
+    #[pyfunction]
+    fn image_paste(
+        dst_id: usize,
+        src_id: usize,
+        x: i32,
+        y: i32,
+        mask_id: vm::function::OptionalArg<usize>,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        // We need both handles simultaneously, so extract clones
+        let src = IMAGES.with(|m| {
+            m.borrow()
+                .get(&src_id)
+                .cloned()
+                .ok_or_else(|| vm.new_value_error(format!("invalid src handle: {src_id}")))
+        })?;
+        let mask = match mask_id.into_option() {
+            Some(mid) => Some(IMAGES.with(|m| {
+                m.borrow()
+                    .get(&mid)
+                    .cloned()
+                    .ok_or_else(|| vm.new_value_error(format!("invalid mask handle: {mid}")))
+            })?),
+            None => None,
+        };
+        with_mut(dst_id, |dst| {
+            pil_rust_core::paste(dst, &src, x, y, mask.as_ref());
+        })
+        .map_err(|e| vm.new_value_error(e))
+    }
+
+    // -- Channel ops -------------------------------------------------------
+
+    #[pyfunction]
+    fn image_split(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let channels = with(handle_id, pil_rust_core::split).map_err(|e| vm.new_value_error(e))?;
+        let ids: Vec<PyObjectRef> = channels
+            .into_iter()
+            .map(|c| vm.ctx.new_int(alloc(c) as i64).into())
+            .collect();
+        Ok(vm.ctx.new_list(ids).into())
+    }
+
+    #[pyfunction]
+    fn image_merge(mode: String, channel_ids: Vec<usize>, vm: &VirtualMachine) -> PyResult<usize> {
+        // Clone channels out to avoid holding IMAGES borrow while calling alloc
+        let cloned: Vec<pil_rust_core::ImageHandle> = IMAGES.with(|m| {
+            let map = m.borrow();
+            let mut channels = Vec::new();
+            for &id in &channel_ids {
+                let h = map
+                    .get(&id)
+                    .ok_or_else(|| vm.new_value_error(format!("invalid channel handle: {id}")))?;
+                channels.push(h.clone());
+            }
+            Ok(channels)
+        })?;
+        let refs: Vec<&pil_rust_core::ImageHandle> = cloned.iter().collect();
+        pil_rust_core::merge(&mode, &refs)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    // -- Statistics --------------------------------------------------------
+
+    #[pyfunction]
+    fn image_histogram(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let hist = with(handle_id, pil_rust_core::histogram).map_err(|e| vm.new_value_error(e))?;
+        let items: Vec<PyObjectRef> = hist
+            .into_iter()
+            .map(|v| vm.ctx.new_int(v as i64).into())
+            .collect();
+        Ok(vm.ctx.new_list(items).into())
+    }
+
+    #[pyfunction]
+    fn image_getbbox(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let bbox = with(handle_id, pil_rust_core::getbbox).map_err(|e| vm.new_value_error(e))?;
+        match bbox {
+            Some((x0, y0, x1, y1)) => Ok(vm::builtins::PyTuple::new_ref(
+                vec![
+                    vm.ctx.new_int(x0 as i32).into(),
+                    vm.ctx.new_int(y0 as i32).into(),
+                    vm.ctx.new_int(x1 as i32).into(),
+                    vm.ctx.new_int(y1 as i32).into(),
+                ],
+                &vm.ctx,
+            )
+            .into()),
+            None => Ok(vm.ctx.none()),
+        }
+    }
+
+    #[pyfunction]
+    fn image_getextrema(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let extrema =
+            with(handle_id, pil_rust_core::getextrema).map_err(|e| vm.new_value_error(e))?;
+        if extrema.len() == 1 {
+            Ok(vm::builtins::PyTuple::new_ref(
+                vec![
+                    vm.ctx.new_int(extrema[0].0 as i32).into(),
+                    vm.ctx.new_int(extrema[0].1 as i32).into(),
+                ],
+                &vm.ctx,
+            )
+            .into())
+        } else {
+            let tuples: Vec<PyObjectRef> = extrema
+                .iter()
+                .map(|&(lo, hi)| {
+                    vm::builtins::PyTuple::new_ref(
+                        vec![
+                            vm.ctx.new_int(lo as i32).into(),
+                            vm.ctx.new_int(hi as i32).into(),
+                        ],
+                        &vm.ctx,
+                    )
+                    .into()
+                })
+                .collect();
+            Ok(vm::builtins::PyTuple::new_ref(tuples, &vm.ctx).into())
+        }
+    }
+
+    // -- frombytes ---------------------------------------------------------
+
+    #[pyfunction]
+    fn image_frombytes(
+        mode: String,
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        pil_rust_core::frombytes(&mode, width, height, &data)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    // -- Drawing: polygon, arc, pieslice -----------------------------------
+
     #[pyfunction]
     fn draw_polygon(
         handle_id: usize,
@@ -393,26 +558,6 @@ pub mod _pil_native {
     }
 
     #[pyfunction]
-    fn draw_chord(
-        handle_id: usize,
-        xy: Vec<i32>,
-        start: f64,
-        end: f64,
-        color: PyObjectRef,
-        fill: bool,
-        vm: &VirtualMachine,
-    ) -> PyResult<()> {
-        if xy.len() < 4 {
-            return Err(vm.new_value_error("chord xy must have 4 values".to_string()));
-        }
-        let c = extract_color_rgba(&color, vm)?;
-        with_mut(handle_id, |h| {
-            pil_rust_core::draw_chord(h, xy[0], xy[1], xy[2], xy[3], start, end, c, fill)
-        })
-        .map_err(|e| vm.new_value_error(e))
-    }
-
-    #[pyfunction]
     fn draw_pieslice(
         handle_id: usize,
         xy: Vec<i32>,
@@ -432,124 +577,370 @@ pub mod _pil_native {
         .map_err(|e| vm.new_value_error(e))
     }
 
-    // -- frombytes ---------------------------------------------------------
-
     #[pyfunction]
-    fn image_frombytes(
-        mode: String,
-        width: u32,
-        height: u32,
-        data: Vec<u8>,
-        vm: &VirtualMachine,
-    ) -> PyResult<usize> {
-        pil_rust_core::frombytes(&mode, width, height, &data)
-            .map(alloc)
-            .map_err(|e| vm.new_value_error(e.to_string()))
-    }
-
-    // -- split / merge / paste ---------------------------------------------
-
-    #[pyfunction]
-    fn image_split(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
-        // Clone the handle first, then release the borrow before calling alloc
-        let handle_clone = with(handle_id, |h| h.clone()).map_err(|e| vm.new_value_error(e))?;
-        let channels = pil_rust_core::split(&handle_clone);
-        let ids: Vec<usize> = channels.into_iter().map(alloc).collect();
-        let py_list: Vec<PyObjectRef> = ids
-            .into_iter()
-            .map(|id| vm.ctx.new_int(id as i64).into())
-            .collect();
-        Ok(vm.ctx.new_list(py_list).into())
-    }
-
-    #[pyfunction]
-    fn image_merge(mode: String, channel_ids: PyObjectRef, vm: &VirtualMachine) -> PyResult<usize> {
-        let ids = channel_ids.try_to_value::<Vec<i64>>(vm)?;
-        // Clone channel handles to avoid holding borrow during alloc
-        let clones: Vec<ImageHandle> = IMAGES
-            .with(|m| {
-                let map = m.borrow();
-                ids.iter()
-                    .map(|&id| {
-                        map.get(&(id as usize))
-                            .cloned()
-                            .ok_or_else(|| format!("invalid image handle: {id}"))
-                    })
-                    .collect::<std::result::Result<Vec<_>, _>>()
-            })
-            .map_err(|e| vm.new_value_error(e))?;
-        let refs: Vec<&ImageHandle> = clones.iter().collect();
-        pil_rust_core::merge(&mode, &refs)
-            .map(alloc)
-            .map_err(|e| vm.new_value_error(e.to_string()))
-    }
-
-    #[pyfunction]
-    fn image_paste(
-        dest_id: usize,
-        src_id: usize,
-        x: i32,
-        y: i32,
+    fn draw_chord(
+        handle_id: usize,
+        xy: Vec<i32>,
+        start: f64,
+        end: f64,
+        color: PyObjectRef,
+        fill: bool,
         vm: &VirtualMachine,
     ) -> PyResult<()> {
-        // We need to clone the source to avoid double borrow
-        let src_clone = with(src_id, |h| h.clone()).map_err(|e| vm.new_value_error(e))?;
-        with_mut(dest_id, |dest| {
-            pil_rust_core::paste(dest, &src_clone, x, y);
+        if xy.len() < 4 {
+            return Err(vm.new_value_error("chord xy must have 4 values".to_string()));
+        }
+        let c = extract_color_rgba(&color, vm)?;
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_chord(h, xy[0], xy[1], xy[2], xy[3], start, end, c, fill)
         })
         .map_err(|e| vm.new_value_error(e))
     }
 
-    // -- getbbox -----------------------------------------------------------
+    // -- Enhancement -------------------------------------------------------
 
     #[pyfunction]
-    fn image_getbbox(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
-        let result = with(handle_id, pil_rust_core::getbbox).map_err(|e| vm.new_value_error(e))?;
-        match result {
-            Some((x0, y0, x1, y1)) => Ok(vm::builtins::PyTuple::new_ref(
-                vec![
-                    vm.ctx.new_int(x0 as i32).into(),
-                    vm.ctx.new_int(y0 as i32).into(),
-                    vm.ctx.new_int(x1 as i32).into(),
-                    vm.ctx.new_int(y1 as i32).into(),
-                ],
-                &vm.ctx,
-            )
-            .into()),
-            None => Ok(vm.ctx.none()),
-        }
+    fn image_adjust_brightness(
+        handle_id: usize,
+        factor: f32,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::adjust_brightness(h, factor))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
     }
 
-    // -- putdata -----------------------------------------------------------
+    #[pyfunction]
+    fn image_adjust_contrast(
+        handle_id: usize,
+        factor: f32,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::adjust_contrast(h, factor))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn image_adjust_color(handle_id: usize, factor: f32, vm: &VirtualMachine) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::adjust_color(h, factor))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn image_adjust_sharpness(
+        handle_id: usize,
+        factor: f32,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        with(handle_id, |h| pil_rust_core::adjust_sharpness(h, factor))
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    // -- ImageOps ----------------------------------------------------------
+
+    #[pyfunction]
+    fn image_autocontrast(handle_id: usize, vm: &VirtualMachine) -> PyResult<usize> {
+        with(handle_id, pil_rust_core::autocontrast)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn image_invert(handle_id: usize, vm: &VirtualMachine) -> PyResult<usize> {
+        with(handle_id, pil_rust_core::invert_image)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    // -- Blend / Composite -------------------------------------------------
+
+    #[pyfunction]
+    fn image_blend(id1: usize, id2: usize, alpha: f64, vm: &VirtualMachine) -> PyResult<usize> {
+        let (h1, h2) = IMAGES.with(|m| {
+            let map = m.borrow();
+            let a = map
+                .get(&id1)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {id1}")))?
+                .clone();
+            let b = map
+                .get(&id2)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {id2}")))?
+                .clone();
+            Ok((a, b))
+        })?;
+        pil_rust_core::blend(&h1, &h2, alpha)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn image_composite(
+        id1: usize,
+        id2: usize,
+        mask_id: usize,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        let (h1, h2, hm) = IMAGES.with(|m| {
+            let map = m.borrow();
+            let a = map
+                .get(&id1)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {id1}")))?
+                .clone();
+            let b = map
+                .get(&id2)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {id2}")))?
+                .clone();
+            let mask = map
+                .get(&mask_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {mask_id}")))?
+                .clone();
+            Ok((a, b, mask))
+        })?;
+        pil_rust_core::composite(&h1, &h2, &hm)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn image_alpha_composite(dst_id: usize, src_id: usize, vm: &VirtualMachine) -> PyResult<usize> {
+        let (dst, src) = IMAGES.with(|m| {
+            let map = m.borrow();
+            let a = map
+                .get(&dst_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {dst_id}")))?
+                .clone();
+            let b = map
+                .get(&src_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {src_id}")))?
+                .clone();
+            Ok((a, b))
+        })?;
+        pil_rust_core::alpha_composite(&dst, &src)
+            .map(alloc)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    // -- Bulk pixel access -------------------------------------------------
+
+    #[pyfunction]
+    fn image_getdata(handle_id: usize, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+        let data = with(handle_id, pil_rust_core::getdata).map_err(|e| vm.new_value_error(e))?;
+        let items: Vec<PyObjectRef> = data
+            .into_iter()
+            .map(|pixel| {
+                if pixel.len() == 1 {
+                    vm.ctx.new_int(pixel[0] as i32).into()
+                } else {
+                    let elems: Vec<PyObjectRef> = pixel
+                        .iter()
+                        .map(|&v| vm.ctx.new_int(v as i32).into())
+                        .collect();
+                    vm.ctx.new_tuple(elems).into()
+                }
+            })
+            .collect();
+        Ok(vm.ctx.new_list(items).into())
+    }
 
     #[pyfunction]
     fn image_putdata(handle_id: usize, data: Vec<u8>, vm: &VirtualMachine) -> PyResult<()> {
         with_mut(handle_id, |h| pil_rust_core::putdata(h, &data)).map_err(|e| vm.new_value_error(e))
     }
 
-    // -- point -------------------------------------------------------------
-
     #[pyfunction]
     fn image_point(handle_id: usize, lut: Vec<u8>, vm: &VirtualMachine) -> PyResult<usize> {
-        with(handle_id, |h| pil_rust_core::point(h, &lut))
-            .map_err(|e| vm.new_value_error(e))?
+        let handle = IMAGES.with(|m| {
+            let map = m.borrow();
+            map.get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))
+                .cloned()
+        })?;
+        pil_rust_core::point(&handle, &lut)
             .map(alloc)
             .map_err(|e| vm.new_value_error(e.to_string()))
     }
 
-    // -- enhance ---------------------------------------------------------------
+    // -- Transform ----------------------------------------------------------
 
     #[pyfunction]
-    fn image_enhance(
+    fn image_transform_affine(
         handle_id: usize,
-        kind: String,
-        factor: f32,
+        out_w: u32,
+        out_h: u32,
+        data: Vec<f64>,
         vm: &VirtualMachine,
     ) -> PyResult<usize> {
-        let handle_clone = with(handle_id, |h| h.clone()).map_err(|e| vm.new_value_error(e))?;
-        pil_rust_core::enhance(&handle_clone, &kind, factor)
+        if data.len() != 6 {
+            return Err(vm.new_value_error("affine transform needs 6 coefficients".to_string()));
+        }
+        let coeffs: [f64; 6] = [data[0], data[1], data[2], data[3], data[4], data[5]];
+        let handle = IMAGES.with(|m| {
+            let map = m.borrow();
+            map.get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))
+                .cloned()
+        })?;
+        Ok(alloc(pil_rust_core::transform_affine(
+            &handle, out_w, out_h, &coeffs,
+        )))
+    }
+
+    #[pyfunction]
+    fn image_transform_perspective(
+        handle_id: usize,
+        out_w: u32,
+        out_h: u32,
+        data: Vec<f64>,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        if data.len() != 8 {
+            return Err(
+                vm.new_value_error("perspective transform needs 8 coefficients".to_string())
+            );
+        }
+        let coeffs: [f64; 8] = [
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+        ];
+        let handle = IMAGES.with(|m| {
+            let map = m.borrow();
+            map.get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))
+                .cloned()
+        })?;
+        Ok(alloc(pil_rust_core::transform_perspective(
+            &handle, out_w, out_h, &coeffs,
+        )))
+    }
+
+    // -- Quantize / getcolors -----------------------------------------------
+
+    #[pyfunction]
+    fn image_quantize(handle_id: usize, colors: usize, vm: &VirtualMachine) -> PyResult<usize> {
+        let handle = IMAGES.with(|m| {
+            let map = m.borrow();
+            map.get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))
+                .cloned()
+        })?;
+        pil_rust_core::quantize(&handle, colors)
             .map(alloc)
             .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn image_getcolors(
+        handle_id: usize,
+        maxcolors: usize,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyObjectRef> {
+        let (result, img_mode) = IMAGES.with(|m| {
+            let map = m.borrow();
+            let h = map
+                .get(&handle_id)
+                .ok_or_else(|| vm.new_value_error(format!("invalid handle: {handle_id}")))?;
+            let mode = pil_rust_core::mode(h);
+            Ok((pil_rust_core::getcolors(h, maxcolors), mode.to_string()))
+        })?;
+        match result {
+            None => Ok(vm.ctx.none()),
+            Some(colors) => {
+                let channels = match img_mode.as_str() {
+                    "L" => 1,
+                    "LA" => 2,
+                    "RGB" => 3,
+                    _ => 4,
+                };
+                let list: Vec<PyObjectRef> = colors
+                    .into_iter()
+                    .map(|(count, rgba)| {
+                        let color: PyObjectRef = match channels {
+                            1 => vm.ctx.new_int(rgba[0] as i32).into(),
+                            _ => {
+                                let vals: Vec<PyObjectRef> = (0..channels)
+                                    .map(|i| vm.ctx.new_int(rgba[i] as i32).into())
+                                    .collect();
+                                vm.ctx.new_tuple(vals).into()
+                            }
+                        };
+                        let pair = vec![vm.ctx.new_int(count as i32).into(), color];
+                        vm.ctx.new_tuple(pair).into()
+                    })
+                    .collect();
+                Ok(vm.ctx.new_list(list).into())
+            }
+        }
+    }
+
+    // -- Font functions ----------------------------------------------------
+
+    #[pyfunction]
+    fn font_load(data: Vec<u8>, px_size: f32, vm: &VirtualMachine) -> PyResult<usize> {
+        pil_rust_core::font_load(&data, px_size)
+            .map(alloc_font)
+            .map_err(|e| vm.new_value_error(e.to_string()))
+    }
+
+    #[pyfunction]
+    fn font_load_default(px_size: f32, _vm: &VirtualMachine) -> usize {
+        alloc_font(pil_rust_core::font_load_default(px_size))
+    }
+
+    #[pyfunction]
+    fn font_close(font_id: usize, _vm: &VirtualMachine) {
+        FONTS.with(|m| m.borrow_mut().remove(&font_id));
+    }
+
+    #[pyfunction]
+    fn font_metrics(font_id: usize, vm: &VirtualMachine) -> PyResult<(f32, f32, f32)> {
+        with_font(font_id, pil_rust_core::font_metrics).map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn font_text_length(font_id: usize, text: String, vm: &VirtualMachine) -> PyResult<f32> {
+        with_font(font_id, |fh| pil_rust_core::font_text_length(fh, &text))
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    fn font_text_bbox(
+        font_id: usize,
+        text: String,
+        x: f32,
+        y: f32,
+        vm: &VirtualMachine,
+    ) -> PyResult<(f32, f32, f32, f32)> {
+        with_font(font_id, |fh| pil_rust_core::font_text_bbox(fh, &text, x, y))
+            .map_err(|e| vm.new_value_error(e))
+    }
+
+    #[pyfunction]
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text_ttf(
+        handle_id: usize,
+        font_id: usize,
+        x: f32,
+        y: f32,
+        text: String,
+        color: PyObjectRef,
+        anchor: vm::function::OptionalArg<String>,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        let c = extract_color_rgba(&color, vm)?;
+        let anch = anchor.into_option().unwrap_or_else(|| "left".to_string());
+        // Clone font to avoid holding FONTS borrow during draw
+        let font = FONTS.with(|m| {
+            m.borrow()
+                .get(&font_id)
+                .cloned()
+                .ok_or_else(|| vm.new_value_error(format!("invalid font handle: {font_id}")))
+        })?;
+        with_mut(handle_id, |h| {
+            pil_rust_core::draw_text_ttf(h, &font, x, y, &text, c, &anch)
+        })
+        .map_err(|e| vm.new_value_error(e))
     }
 
     // -- Helpers -----------------------------------------------------------

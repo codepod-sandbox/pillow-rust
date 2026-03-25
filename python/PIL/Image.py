@@ -50,6 +50,10 @@ class Resampling:
     BICUBIC = "bicubic"
     LANCZOS = "lanczos"
 
+# Transform methods
+AFFINE = 0
+PERSPECTIVE = 1
+
 # ---------------------------------------------------------------------------
 # Supported modes
 # ---------------------------------------------------------------------------
@@ -172,109 +176,197 @@ class Image:
 
     # -- pixel access -------------------------------------------------------
 
-    def getpixel(self, xy):
-        """Return the pixel value at (x, y). Negative coordinates wrap around."""
-        x, y = xy[0], xy[1]
+    def _resolve_xy(self, xy):
+        """Resolve (x, y) supporting negative indices; raise IndexError if out of bounds."""
+        x, y = int(xy[0]), int(xy[1])
         w, h = self.size
         if x < 0:
-            x = x + w
+            x += w
         if y < 0:
-            y = y + h
+            y += h
         if x < 0 or x >= w or y < 0 or y >= h:
-            raise IndexError(f"pixel coordinate ({xy[0]}, {xy[1]}) out of range")
+            raise IndexError(f"pixel coordinate ({xy[0]}, {xy[1]}) out of range for {w}x{h} image")
+        return x, y
+
+    def getpixel(self, xy):
+        """Return the pixel value at (x, y)."""
+        x, y = self._resolve_xy(xy)
         return _pil_native.image_getpixel(self._handle, x, y)
 
     def putpixel(self, xy, color):
-        """Set the pixel at (x, y) to *color*. Negative coordinates wrap around."""
-        x, y = xy[0], xy[1]
-        w, h = self.size
-        if x < 0:
-            x = x + w
-        if y < 0:
-            y = y + h
-        if x < 0 or x >= w or y < 0 or y >= h:
-            raise IndexError(f"pixel coordinate ({xy[0]}, {xy[1]}) out of range")
+        """Set the pixel at (x, y) to *color*."""
+        x, y = self._resolve_xy(xy)
         if isinstance(color, int):
             color = (color,)
         _pil_native.image_putpixel(self._handle, x, y, list(color))
+
+    # -- paste --------------------------------------------------------------
+
+    def paste(self, im, box=None, mask=None):
+        """Paste *im* onto this image.
+
+        *im* can be an Image, a color integer, or a color tuple.
+        *box* is (x, y) or (x, y, x1, y1).
+        """
+        # Handle color fill: paste(color, box) fills the region
+        if isinstance(im, (int, tuple)):
+            color = im
+            if isinstance(color, int):
+                if self.mode in ("RGB", "RGBA"):
+                    color = (color, color, color) + ((255,) if self.mode == "RGBA" else ())
+                elif self.mode == "L":
+                    color = (color,)
+                elif self.mode == "LA":
+                    color = (color, 255)
+                else:
+                    color = (color,)
+            if box is None:
+                w, h = self.size
+                fill_box = (0, 0, w, h)
+            elif len(box) == 2:
+                fill_box = (box[0], box[1], self.size[0], self.size[1])
+            else:
+                fill_box = box
+            # Create a solid-color image to paste
+            bw = fill_box[2] - fill_box[0]
+            bh = fill_box[3] - fill_box[1]
+            if bw <= 0 or bh <= 0:
+                return
+            fill_im = new(self.mode, (bw, bh), color)
+            x, y = fill_box[0], fill_box[1]
+            if mask is not None:
+                mask_handle = mask._handle if hasattr(mask, '_handle') else None
+                if mask_handle is not None:
+                    _pil_native.image_paste(self._handle, fill_im._handle, x, y, mask_handle)
+                    return
+            _pil_native.image_paste(self._handle, fill_im._handle, x, y)
+            return
+
+        if box is None:
+            x, y = 0, 0
+        elif len(box) == 2:
+            x, y = box
+        else:
+            x, y = box[0], box[1]
+        src_handle = im._handle if hasattr(im, '_handle') else im
+        mask_handle = mask._handle if mask is not None and hasattr(mask, '_handle') else None
+        if mask_handle is not None:
+            _pil_native.image_paste(self._handle, src_handle, x, y, mask_handle)
+        else:
+            _pil_native.image_paste(self._handle, src_handle, x, y)
+
+    # -- channel ops --------------------------------------------------------
+
+    def split(self):
+        """Split into individual channels as L-mode images."""
+        ids = _pil_native.image_split(self._handle)
+        return tuple(Image(h) for h in ids)
+
+    # -- statistics ---------------------------------------------------------
+
+    def histogram(self, mask=None):
+        """Return a histogram of pixel values (list of 256 * bands ints).
+
+        If *mask* is given (an ``"L"`` image), only pixels where mask > 0
+        are counted.
+        """
+        if mask is None:
+            return list(_pil_native.image_histogram(self._handle))
+        # Masked histogram: compute in Python
+        data = self.getdata()
+        m = self.mode
+        bands = len(_MODE_BANDS.get(m, ("R", "G", "B")))
+        hist = [0] * (256 * bands)
+        mask_data = mask.getdata()
+        for i, px in enumerate(data):
+            mv = mask_data[i] if i < len(mask_data) else 0
+            mv_val = mv if isinstance(mv, int) else mv[0]
+            if mv_val == 0:
+                continue
+            if isinstance(px, (tuple, list)):
+                for b in range(bands):
+                    hist[b * 256 + (px[b] & 0xFF)] += 1
+            else:
+                hist[px & 0xFF] += 1
+        return hist
+
+    def getbbox(self):
+        """Return bounding box of non-zero pixels, or None."""
+        return _pil_native.image_getbbox(self._handle)
+
+    def getextrema(self):
+        """Return min/max pixel value(s)."""
+        return _pil_native.image_getextrema(self._handle)
+
+    # -- thumbnail ----------------------------------------------------------
+
+    def thumbnail(self, size, resample=None, **_kw):
+        """Modify in place to fit within *size*, preserving aspect ratio."""
+        w, h = self.size
+        tw, th = size
+        if w <= tw and h <= th:
+            return  # already fits, PIL never upsizes
+        ratio = min(tw / w, th / h)
+        new_w = max(1, int(w * ratio))
+        new_h = max(1, int(h * ratio))
+        if resample is not None:
+            resized = Image(_pil_native.image_resize(self._handle, new_w, new_h, resample))
+        else:
+            resized = Image(_pil_native.image_resize(self._handle, new_w, new_h))
+        # Replace our handle
+        old = self._handle
+        self._handle = resized._handle
+        resized._handle = None  # prevent resized.__del__ from closing it
+        _pil_native.image_close(old)
 
     # -- transforms ---------------------------------------------------------
 
     def resize(self, size, resample=None, **_kw):
         """Return a resized copy."""
-        if isinstance(size, list):
-            size = tuple(size)
-        if size[0] <= 0 or size[1] <= 0:
+        w, h = int(size[0]), int(size[1])
+        if w <= 0 or h <= 0:
             raise ValueError(f"invalid size: {size}")
         if resample is not None:
-            return Image(_pil_native.image_resize(self._handle, size[0], size[1], resample))
-        return Image(_pil_native.image_resize(self._handle, size[0], size[1]))
-
-    def thumbnail(self, size, resample=None, **_kw):
-        """Modify the image in-place to fit within *size*, preserving aspect ratio.
-
-        Only shrinks — never enlarges.
-        """
-        w, h = self.size
-        max_w, max_h = size
-        if w <= max_w and h <= max_h:
-            return
-        # Scale by the larger ratio to fit within bounds
-        scale = min(max_w / w, max_h / h)
-        new_w = max(1, int(w * scale))
-        new_h = max(1, int(h * scale))
-        new_im = self.resize((new_w, new_h), resample=resample)
-        # Replace handle in-place
-        _pil_native.image_close(self._handle)
-        self._handle = new_im._handle
-        new_im._handle = None  # prevent double-close
+            return Image(_pil_native.image_resize(self._handle, w, h, resample))
+        return Image(_pil_native.image_resize(self._handle, w, h))
 
     def crop(self, box=None):
-        """Return a cropped copy. *box* is (left, upper, right, lower).
-
-        Float coordinates are rounded to the nearest integer.
-        Raises ValueError if right < left or bottom < top.
-        Crop regions outside the image boundaries are filled with zero.
-        """
+        """Return a cropped copy. *box* is (left, upper, right, lower)."""
         if box is None:
             return self.copy()
-        left, upper, right, lower = (int(round(v)) for v in box)
-        if right < left:
-            raise ValueError(
-                f"Coordinate 'right' is less than 'left': {right} < {left}"
-            )
-        if lower < upper:
-            raise ValueError(
-                f"Coordinate 'lower' is less than 'upper': {lower} < {upper}"
-            )
-        iw, ih = self.size
-        # Intersection of crop box with image bounds
-        src_left = max(left, 0)
-        src_upper = max(upper, 0)
-        src_right = min(right, iw)
-        src_lower = min(lower, ih)
-        # If fully within image, delegate to Rust directly
-        if left >= 0 and upper >= 0 and right <= iw and lower <= ih:
-            return Image(_pil_native.image_crop(self._handle, [left, upper, right, lower]))
-        # Otherwise create a zero-filled output and paste the valid intersection
-        out_w = right - left
-        out_h = lower - upper
+        x0, y0, x1, y1 = round(box[0]), round(box[1]), round(box[2]), round(box[3])
+        if x1 < x0:
+            raise ValueError(f"crop right ({x1}) must be >= left ({x0})")
+        if y1 < y0:
+            raise ValueError(f"crop lower ({y1}) must be >= upper ({y0})")
+        w, h = self.size
+        # If box is fully within bounds, fast path
+        if x0 >= 0 and y0 >= 0 and x1 <= w and y1 <= h and x1 >= x0 and y1 >= y0:
+            return Image(_pil_native.image_crop(self._handle, [x0, y0, x1, y1]))
+        # Wide crop: create output filled with black, paste valid region
+        out_w = max(0, x1 - x0)
+        out_h = max(0, y1 - y0)
         out = new(self.mode, (out_w, out_h), 0)
-        if src_left < src_right and src_upper < src_lower:
-            inner = Image(_pil_native.image_crop(self._handle, [src_left, src_upper, src_right, src_lower]))
-            dst_left = src_left - left
-            dst_upper = src_upper - upper
-            _pil_native.image_paste(out._handle, inner._handle, dst_left, dst_upper)
+        if out_w == 0 or out_h == 0:
+            return out
+        src_x0 = max(0, x0)
+        src_y0 = max(0, y0)
+        src_x1 = min(w, x1)
+        src_y1 = min(h, y1)
+        if src_x0 >= src_x1 or src_y0 >= src_y1:
+            return out
+        piece = Image(_pil_native.image_crop(self._handle, [src_x0, src_y0, src_x1, src_y1]))
+        _pil_native.image_paste(out._handle, piece._handle, src_x0 - x0, src_y0 - y0)
         return out
 
     def rotate(self, angle, resample=None, expand=False, fillcolor=None, **_kw):
         """Return a rotated copy (counter-clockwise, in degrees).
 
-        If *fillcolor* is given, the areas outside the rotation are filled with
+        If *fillcolor* is given, areas outside the rotation are filled with
         that color instead of black/transparent.
         """
         if fillcolor is None:
-            return Image(_pil_native.image_rotate(self._handle, float(angle), bool(expand)))
+            return Image(_pil_native.image_rotate(self._handle, float(angle), expand))
 
         orig_mode = self.mode
         # Rotate in RGBA so empty areas become transparent (0,0,0,0)
@@ -288,12 +380,12 @@ class Image:
                 _pil_native.image_close(rgba_handle)
             rotated = Image(rot_handle)
 
-        # Resolve fillcolor to a 4-element [R, G, B, A] list
+        # Resolve fillcolor to a 4-element list [R, G, B, A]
         fc = _resolve_color(fillcolor, "RGBA")
         while len(fc) < 4:
             fc.append(255)
 
-        # Composite: replace transparent pixels with fillcolor
+        # Replace transparent pixels with fillcolor
         rot_bytes = list(rotated.tobytes())
         out_bytes = []
         for i in range(0, len(rot_bytes), 4):
@@ -315,22 +407,42 @@ class Image:
         return Image(_pil_native.image_transpose(self._handle, method))
 
     def convert(self, mode=None, **_kw):
-        """Return a copy converted to the given mode ('RGB', 'L', etc.)."""
+        """Return a copy converted to the given mode ('RGB', 'L', 'LA', 'RGBA', '1')."""
         if mode is None:
             mode = "RGB"
+        if mode == "1":
+            # Binary mode: threshold at 128
+            gray = self if self.mode == "L" else Image(_pil_native.image_convert(self._handle, "L"))
+            return gray.point(lambda x: 255 if x >= 128 else 0)
         return Image(_pil_native.image_convert(self._handle, mode))
+
+    def transform(self, size, method, data=None, resample=0, fill=1, fillcolor=None):
+        """Apply a geometric transform and return a new image."""
+        coeffs = [float(v) for v in data]
+        if method == AFFINE:
+            return Image(_pil_native.image_transform_affine(
+                self._handle, size[0], size[1], coeffs))
+        elif method == PERSPECTIVE:
+            return Image(_pil_native.image_transform_perspective(
+                self._handle, size[0], size[1], coeffs))
+        else:
+            raise ValueError(f"unsupported transform method: {method}")
 
     # -- serialisation ------------------------------------------------------
 
     def save(self, fp, format=None, **params):
-        """Save the image to *fp* (filename or file-like object)."""
+        """Save the image to *fp* (filename or file-like object).
+
+        Keyword arguments are format-specific. JPEG supports ``quality=``
+        (1-95, default 75).
+        """
         if format is None and isinstance(fp, str):
             ext = fp.rsplit(".", 1)[-1] if "." in fp else ""
             format = ext.lower() or "png"
         fmt = format or "png"
         quality = params.get("quality")
         if quality is not None:
-            data = _pil_native.image_save(self._handle, fmt, int(quality))
+            data = _pil_native.image_save_with_quality(self._handle, fmt, int(quality))
         else:
             data = _pil_native.image_save(self._handle, fmt)
         if isinstance(fp, str):
@@ -343,27 +455,32 @@ class Image:
         """Return raw pixel bytes."""
         return bytes(_pil_native.image_tobytes(self._handle))
 
-    def frombytes(self, data):
-        """Load raw pixel data into this image (in-place)."""
-        w, h = self.size
-        m = self.mode
-        new_handle = _pil_native.image_frombytes(m, w, h, data)
-        # Close old handle and replace
+    # -- copy / close -------------------------------------------------------
+
+    def copy(self):
+        """Return an independent copy."""
+        out = Image(_pil_native.image_copy(self._handle))
+        out.info = self.info.copy()
+        return out
+
+    def close(self):
+        """Release the underlying native handle."""
         if self._handle is not None:
             _pil_native.image_close(self._handle)
-        self._handle = new_handle
+            self._handle = None
+
+    def frombytes(self, data):
+        """Load image data from raw bytes (in-place, same mode and size)."""
+        _pil_native.image_putdata(self._handle, list(data))
+
+    # -- bulk pixel access --------------------------------------------------
 
     def getdata(self):
-        """Return a flat sequence of pixel values."""
-        raw = self.tobytes()
-        m = self.mode
-        bands = {"L": 1, "LA": 2, "RGB": 3, "RGBA": 4}.get(m, 3)
-        if bands == 1:
-            return list(raw)
-        return [tuple(raw[i:i + bands]) for i in range(0, len(raw), bands)]
+        """Return contents as a flat list of pixel values."""
+        return _pil_native.image_getdata(self._handle)
 
     def putdata(self, data):
-        """Set all pixels from a flat sequence of pixel values."""
+        """Replace image data from a flat sequence of pixel values."""
         m = self.mode
         bands = {"L": 1, "LA": 2, "RGB": 3, "RGBA": 4}.get(m, 3)
         flat = []
@@ -379,157 +496,158 @@ class Image:
                         flat.append(v)
         _pil_native.image_putdata(self._handle, flat)
 
-    # -- channel operations -------------------------------------------------
+    def point(self, lut, mode=None):
+        """Apply a lookup table to each pixel. *lut* is a list of 256 values."""
+        bands = len(self.getbands())
+        if callable(lut):
+            lut = [lut(i) for i in range(256)] * bands
+        elif len(lut) == 256 and bands > 1:
+            lut = list(lut) * bands
+        out = Image(_pil_native.image_point(self._handle, [int(v) & 0xFF for v in lut]))
+        target_mode = mode or self.mode
+        if out.mode != target_mode:
+            out = out.convert(target_mode)
+        return out
 
-    def getbands(self):
-        """Return a tuple of band names (e.g. ('R','G','B'))."""
-        return _MODE_BANDS.get(self.mode, ("R", "G", "B"))
+    # -- compositing -------------------------------------------------------
 
-    def split(self):
-        """Split the image into individual bands."""
-        ids = _pil_native.image_split(self._handle)
-        return tuple(Image(h) for h in ids)
+    def quantize(self, colors=256, method=None, kmeans=0, palette=None, dither=1):
+        """Return a quantized copy with at most *colors* distinct colors."""
+        return Image(_pil_native.image_quantize(self._handle, int(colors)))
 
-    def getchannel(self, channel):
-        """Return a single band as an 'L' mode image."""
-        bands = self.getbands()
-        if isinstance(channel, int):
-            if channel < 0 or channel >= len(bands):
-                raise ValueError(f"bad channel index: {channel}")
-            idx = channel
-        elif isinstance(channel, str):
-            if channel not in bands:
-                raise ValueError(f"bad channel name: {channel}")
-            idx = bands.index(channel)
-        else:
-            raise ValueError(f"bad channel: {channel}")
-        parts = self.split()
-        return parts[idx]
+    def getcolors(self, maxcolors=256):
+        """Return a list of (count, color) tuples, or None if too many colors."""
+        return _pil_native.image_getcolors(self._handle, int(maxcolors))
 
-    def getbbox(self):
-        """Return bounding box of non-zero region, or None."""
-        return _pil_native.image_getbbox(self._handle)
-
-    # -- paste --------------------------------------------------------------
-
-    def paste(self, im_or_color, box=None, mask=None):
-        """Paste another image or color onto this image."""
-        if isinstance(im_or_color, Image):
-            x, y = 0, 0
-            if box is not None:
-                if isinstance(box, (tuple, list)):
-                    x = box[0]
-                    y = box[1]
-            if mask is not None:
-                # Masked paste: blend src into dst using mask as alpha
-                src = im_or_color
-                dw, dh = self.size
-                sw, sh = src.size
-                # Determine the number of bytes per pixel in dst
-                n_dst = len(self.getbands())
-                n_src = len(src.getbands())
-                # Get mask as L (if it's RGBA use the alpha channel)
-                if mask.mode == "RGBA":
-                    mask_l = mask.split()[3]
-                elif mask.mode == "L":
-                    mask_l = mask
-                else:
-                    mask_l = mask.convert("L")
-                mask_data = list(mask_l.getdata())
-                # We use tobytes/frombytes for fast per-pixel work
-                dst_bytes = bytearray(self.tobytes())
-                src_bytes = bytearray(src.tobytes())
-                for py in range(sh):
-                    dy = y + py
-                    if dy < 0 or dy >= dh:
-                        continue
-                    for px in range(sw):
-                        dx = x + px
-                        if dx < 0 or dx >= dw:
-                            continue
-                        alpha = mask_data[py * sw + px]
-                        if alpha == 0:
-                            continue
-                        d_off = (dy * dw + dx) * n_dst
-                        s_off = (py * sw + px) * n_src
-                        if alpha == 255:
-                            for c in range(min(n_dst, n_src)):
-                                dst_bytes[d_off + c] = src_bytes[s_off + c]
-                        else:
-                            inv = 255 - alpha
-                            for c in range(min(n_dst, n_src)):
-                                dst_bytes[d_off + c] = (
-                                    src_bytes[s_off + c] * alpha + dst_bytes[d_off + c] * inv
-                                ) // 255
-                _pil_native.image_putdata(self._handle, list(dst_bytes))
-                return
-            _pil_native.image_paste(self._handle, im_or_color._handle, x, y)
-        elif isinstance(im_or_color, (tuple, list)):
-            # Fill box with color
-            w, h = self.size
-            if box is None:
-                box = (0, 0, w, h)
-            fill_im = new(self.mode, (box[2] - box[0], box[3] - box[1]), tuple(im_or_color))
-            _pil_native.image_paste(self._handle, fill_im._handle, box[0], box[1])
-        elif isinstance(im_or_color, int):
-            w, h = self.size
-            if box is None:
-                box = (0, 0, w, h)
-            fill_im = new(self.mode, (box[2] - box[0], box[3] - box[1]), im_or_color)
-            _pil_native.image_paste(self._handle, fill_im._handle, box[0], box[1])
-
-    def alpha_composite(self, src, dest=(0, 0), source=None):
-        """Composite *src* over this image in-place.
+    def alpha_composite(self, im, dest=(0, 0), source=None):
+        """Alpha composite *im* over this image in-place.
 
         *dest* is the (x, y) offset into this image where compositing starts.
-        *source* is the optional (x, y) or (x, y, w, h) crop of *src* to use.
+        *source* is the optional (x, y) or (x, y, w, h) crop of *im* to use.
         """
-        if not isinstance(dest, (tuple, list)) or len(dest) < 2:
-            raise ValueError("dest must be a sequence of 2 integers")
+        src = im
         if source is not None:
             if not isinstance(source, (tuple, list)):
                 raise ValueError("source must be a sequence")
             if len(source) == 2:
-                src = src.crop((source[0], source[1], src.width, src.height))
+                src = im.crop((source[0], source[1], im.width, im.height))
             elif len(source) == 4:
-                if source[1] < 0 or source[3] < 0:
-                    raise ValueError("source coordinates cannot be negative")
-                src = src.crop(source)
+                src = im.crop(source)
             else:
                 raise ValueError("source must be 2 or 4 values")
         dx, dy = int(dest[0]), int(dest[1])
-        # Determine the overlapping region
         sw, sh = src.size
         dw, dh = self.size
-        # Clip to destination bounds
         src_x0 = max(-dx, 0)
         src_y0 = max(-dy, 0)
         src_x1 = min(sw, dw - dx)
         src_y1 = min(sh, dh - dy)
         if src_x1 <= src_x0 or src_y1 <= src_y0:
             return
-        # Crop the src and dst regions that overlap
         src_region = src.crop((src_x0, src_y0, src_x1, src_y1))
         dst_x = dx + src_x0
         dst_y = dy + src_y0
         region_w = src_x1 - src_x0
         region_h = src_y1 - src_y0
         dst_region = self.crop((dst_x, dst_y, dst_x + region_w, dst_y + region_h))
-        # Ensure both are RGBA for compositing
         if dst_region.mode != "RGBA":
             dst_region = dst_region.convert("RGBA")
         if src_region.mode != "RGBA":
             src_region = src_region.convert("RGBA")
         composited = alpha_composite(dst_region, src_region)
-        # Paste result back
         if self.mode != "RGBA":
             composited = composited.convert(self.mode)
         _pil_native.image_paste(self._handle, composited._handle, dst_x, dst_y)
+        return self
+
+    # -- channel access -----------------------------------------------------
+
+    def getchannel(self, channel):
+        """Return a single channel as an L-mode image.
+        *channel* can be an index (0, 1, 2, ...) or a name ('R', 'G', 'B', 'A').
+        """
+        if isinstance(channel, str):
+            ch = channel.upper()
+            # LA mode: L=0, A=1
+            if self.mode == "LA" and ch == "A":
+                idx = 1
+            else:
+                channel_map = {
+                    "R": 0, "G": 1, "B": 2, "A": 3,
+                    "L": 0,
+                }
+                idx = channel_map.get(ch)
+            if idx is None:
+                raise ValueError(f"unknown channel name: {channel}")
+        else:
+            idx = int(channel)
+        bands = self.split()
+        if idx < 0 or idx >= len(bands):
+            raise ValueError(f"channel index {idx} out of range for mode {self.mode}")
+        return bands[idx]
+
+    # -- reduce / downsample ------------------------------------------------
+
+    def reduce(self, factor, box=None):
+        """Return a copy reduced by integer *factor*."""
+        if isinstance(factor, int):
+            fx, fy = factor, factor
+        else:
+            fx, fy = factor
+        if box is not None:
+            src = self.crop(box)
+        else:
+            src = self
+        w, h = src.size
+        new_w = max(1, w // fx)
+        new_h = max(1, h // fy)
+        return src.resize((new_w, new_h))
+
+    # -- stubs for compatibility -------------------------------------------
+
+    def load(self):
+        """No-op — pixels are always loaded in our implementation."""
+        pass
+
+    def show(self, title=None):
+        """No-op — display is not available in sandbox."""
+        pass
+
+    def tell(self):
+        """Return current frame number (always 0 for single-frame images)."""
+        return 0
+
+    def seek(self, frame):
+        """Seek to frame number. Only frame 0 is supported."""
+        if frame != 0:
+            raise EOFError("no more frames")
+
+    @property
+    def n_frames(self):
+        """Number of frames (always 1 for non-animated images)."""
+        return 1
+
+    @property
+    def is_animated(self):
+        """Whether the image has multiple frames."""
+        return False
+
+    # -- filter -------------------------------------------------------------
+
+    def filter(self, f):
+        """Apply *f* (an ImageFilter object) and return a new Image."""
+        args = getattr(f, "args", None) or []
+        return Image(_pil_native.image_filter(self._handle, f.name, args))
+
+    # -- channel utilities --------------------------------------------------
+
+    def getbands(self):
+        """Return a tuple of band names (e.g. ('R','G','B'))."""
+        return _MODE_BANDS.get(self.mode, ("R", "G", "B"))
 
     def putalpha(self, alpha):
         """Set the alpha channel from an 'L' image or int value."""
         if self.mode != "RGBA":
-            # Convert to RGBA first
             new_handle = _pil_native.image_convert(self._handle, "RGBA")
             _pil_native.image_close(self._handle)
             self._handle = new_handle
@@ -548,110 +666,7 @@ class Image:
                         a = a[0]
                     self.putpixel((x, y), (px[0], px[1], px[2], a))
 
-    # -- statistics ---------------------------------------------------------
-
-    def histogram(self, mask=None):
-        """Return a histogram of pixel values (list of 256 * bands ints).
-
-        If *mask* is given (an ``"L"`` image), only pixels where mask > 0
-        are counted.
-        """
-        data = self.getdata()
-        m = self.mode
-        bands = len(_MODE_BANDS.get(m, ("R", "G", "B")))
-        hist = [0] * (256 * bands)
-        mask_data = mask.getdata() if mask is not None else None
-        for i, px in enumerate(data):
-            if mask_data is not None and mask_data[i] == 0:
-                continue
-            if isinstance(px, (tuple, list)):
-                for b in range(bands):
-                    hist[b * 256 + (px[b] & 0xFF)] += 1
-            else:
-                hist[px & 0xFF] += 1
-        return hist
-
-    def getcolors(self, maxcolors=256):
-        """Return a list of (count, color) tuples."""
-        data = self.getdata()
-        counts = {}
-        for px in data:
-            key = px
-            counts[key] = counts.get(key, 0) + 1
-        if len(counts) > maxcolors:
-            return None
-        return [(count, color) for color, count in counts.items()]
-
-    def getextrema(self):
-        """Return min/max pixel values."""
-        data = self.getdata()
-        if not data:
-            return None
-        m = self.mode
-        bands = len(_MODE_BANDS.get(m, ("R", "G", "B")))
-        if bands == 1:
-            return (min(data), max(data))
-        mins = list(data[0])
-        maxs = list(data[0])
-        for px in data:
-            for b in range(bands):
-                if px[b] < mins[b]:
-                    mins[b] = px[b]
-                if px[b] > maxs[b]:
-                    maxs[b] = px[b]
-        return tuple((mins[b], maxs[b]) for b in range(bands))
-
-    # -- point (pixel transform) --------------------------------------------
-
-    def point(self, lut):
-        """Apply a lookup table or function to each pixel."""
-        if callable(lut):
-            m = self.mode
-            bands = len(_MODE_BANDS.get(m, ("R", "G", "B")))
-            table = []
-            for b in range(bands):
-                for i in range(256):
-                    table.append(int(lut(i)) & 0xFF)
-            lut = table
-        return Image(_pil_native.image_point(self._handle, list(lut)))
-
-    # -- copy / close -------------------------------------------------------
-
-    def copy(self):
-        """Return an independent copy."""
-        im = Image(_pil_native.image_copy(self._handle))
-        im.info = dict(self.info)
-        im.format = self.format
-        return im
-
-    def close(self):
-        """Release the underlying native handle."""
-        if self._handle is not None:
-            _pil_native.image_close(self._handle)
-            self._handle = None
-
-    # -- filter -------------------------------------------------------------
-
-    def filter(self, f):
-        """Apply *f* (an ImageFilter object) and return a new Image."""
-        args = getattr(f, "args", None)
-        if args is not None:
-            return Image(_pil_native.image_filter(self._handle, f.name, args))
-        return Image(_pil_native.image_filter(self._handle, f.name))
-
     # -- dunder helpers -----------------------------------------------------
-
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:
-            pass
-
-    def __repr__(self):
-        if self._handle is None:
-            return "<PIL.Image closed>"
-        w, h = self.size
-        return f"<PIL.Image mode={self.mode} size={w}x{h}>"
 
     def __eq__(self, other):
         if not isinstance(other, Image):
@@ -667,6 +682,18 @@ class Image:
         if eq is NotImplemented:
             return eq
         return not eq
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def __repr__(self):
+        if self._handle is None:
+            return "<PIL.Image closed>"
+        w, h = self.size
+        return f"<PIL.Image mode={self.mode} size={w}x{h}>"
 
     def __enter__(self):
         return self
@@ -689,27 +716,112 @@ def open(fp, mode="r"):
         data = bytes(fp)
     else:
         data = fp.read()
-    im = Image(_pil_native.image_open(data))
-    return im
+    img = Image(_pil_native.image_open(data))
+    if isinstance(fp, str) and "." in fp:
+        ext = fp.rsplit(".", 1)[-1].upper()
+        fmt_map = {"JPG": "JPEG", "PNG": "PNG", "GIF": "GIF", "BMP": "BMP",
+                   "TIFF": "TIFF", "TIF": "TIFF", "WEBP": "WEBP", "JPEG": "JPEG"}
+        img.format = fmt_map.get(ext, ext)
+    return img
 
 
 def new(mode, size, color=0):
     """Create a new image with the given *mode* and *size*."""
-    if isinstance(size, list):
-        size = tuple(size)
-    color = _resolve_color(color, mode)
+    if isinstance(color, str):
+        # Named color support: "red", "#ff0000", "rgb(255,0,0)", etc.
+        from PIL import ImageColor
+        color = ImageColor.getcolor(color, mode)
+    if isinstance(color, int):
+        if mode in ("RGB", "RGBA"):
+            color = [color, color, color] + ([255] if mode == "RGBA" else [])
+        elif mode == "L":
+            color = [color]
+        elif mode == "LA":
+            color = [color, 255]
+        else:
+            color = [color]
+    elif isinstance(color, tuple):
+        color = list(color)
     return Image(_pil_native.image_new(mode, size[0], size[1], color))
 
 
 def frombytes(mode, size, data):
-    """Create a new image from raw bytes."""
+    """Create an image from raw pixel *data*."""
     return Image(_pil_native.image_frombytes(mode, size[0], size[1], data))
 
 
-def merge(mode, channels):
-    """Merge a sequence of single-band images into a multi-band image."""
-    channel_ids = [ch._handle for ch in channels]
-    return Image(_pil_native.image_merge(mode, channel_ids))
+def fromarray(obj, mode=None):
+    """Create an image from a numpy-like array.
+
+    The array must expose ``.shape``, ``.dtype``, and ``.tobytes()``
+    (or be convertible via ``bytes(obj)``).
+    """
+    shape = obj.shape
+    if len(shape) == 2:
+        h, w = shape
+        if mode is None:
+            mode = "L"
+    elif len(shape) == 3:
+        h, w, c = shape
+        if mode is None:
+            mode = {1: "L", 2: "LA", 3: "RGB", 4: "RGBA"}.get(c, "RGBA")
+    else:
+        raise ValueError("unsupported array shape: " + str(shape))
+    raw = obj.tobytes() if hasattr(obj, 'tobytes') else bytes(obj)
+    return frombytes(mode, (w, h), raw)
+
+
+def merge(mode, bands):
+    """Merge individual L-mode band images into a multi-channel image."""
+    ids = [b._handle for b in bands]
+    return Image(_pil_native.image_merge(mode, ids))
+
+
+def blend(im1, im2, alpha):
+    """Linear interpolation: out = im1 * (1 - alpha) + im2 * alpha."""
+    out = Image(_pil_native.image_blend(im1._handle, im2._handle, float(alpha)))
+    if im1.mode != "RGBA":
+        out = out.convert(im1.mode)
+    return out
+
+
+def eval(image, func):
+    """Apply *func* to each pixel value and return a new image."""
+    return image.point(func)
+
+
+def linear_gradient(mode):
+    """Create a 256x256 linear gradient image."""
+    im = new("L", (256, 256), 0)
+    for y in range(256):
+        for x in range(256):
+            im.putpixel((x, y), y)
+    if mode != "L":
+        im = im.convert(mode)
+    return im
+
+
+def radial_gradient(mode):
+    """Create a 256x256 radial gradient image."""
+    im = new("L", (256, 256), 0)
+    cx, cy = 127.5, 127.5
+    for y in range(256):
+        for x in range(256):
+            dx = x - cx
+            dy = y - cy
+            d = int(min(255, (dx * dx + dy * dy) ** 0.5 * 255 / 180.3))
+            im.putpixel((x, y), d)
+    if mode != "L":
+        im = im.convert(mode)
+    return im
+
+
+def composite(im1, im2, mask):
+    """Composite two images using a mask."""
+    out = Image(_pil_native.image_composite(im1._handle, im2._handle, mask._handle))
+    if im1.mode != "RGBA":
+        out = out.convert(im1.mode)
+    return out
 
 
 def alpha_composite(dst, src):

@@ -6,48 +6,61 @@ import _pil_native
 from PIL.Image import Image
 
 
-class _Enhancer:
-    """Base class for image enhancers."""
+class _Enhance:
+    """Base class for enhancers."""
+
+    def enhance(self, factor):
+        """Return enhanced image. factor=1.0 returns original."""
+        raise NotImplementedError
+
+
+class Brightness(_Enhance):
+    """Adjust image brightness.
+
+    factor=0.0 gives black, 1.0 gives original, >1.0 brightens.
+    """
 
     def __init__(self, image):
         self._image = image
-        self._kind = ""
 
     def enhance(self, factor):
-        """Return an enhanced copy. factor=1.0 returns original."""
-        new_handle = _pil_native.image_enhance(
-            self._image._handle, self._kind, float(factor)
-        )
-        return Image(new_handle)
+        return Image(_pil_native.image_adjust_brightness(self._image._handle, float(factor)))
 
 
-class Brightness(_Enhancer):
-    """Adjust image brightness. factor=0.0 is black, 1.0 is original."""
+class Contrast(_Enhance):
+    """Adjust image contrast.
 
-    def __init__(self, image):
-        super().__init__(image)
-        self._kind = "brightness"
-
-
-class Contrast(_Enhancer):
-    """Adjust image contrast. factor=0.0 is solid gray, 1.0 is original."""
+    factor=0.0 gives solid grey, 1.0 gives original, >1.0 increases contrast.
+    """
 
     def __init__(self, image):
-        super().__init__(image)
-        self._kind = "contrast"
+        self._image = image
+
+    def enhance(self, factor):
+        return Image(_pil_native.image_adjust_contrast(self._image._handle, float(factor)))
 
 
-class Color(_Enhancer):
-    """Adjust color saturation. factor=0.0 is grayscale, 1.0 is original."""
+class Color(_Enhance):
+    """Adjust colour saturation.
 
-    def __init__(self, image):
-        super().__init__(image)
-        self._kind = "color"
-
-
-class Sharpness(_Enhancer):
-    """Adjust image sharpness. factor=0.0 is blurred, 1.0 is original, 2.0 is sharpened."""
+    factor=0.0 gives greyscale, 1.0 gives original, >1.0 increases saturation.
+    """
 
     def __init__(self, image):
-        super().__init__(image)
-        self._kind = "sharpness"
+        self._image = image
+
+    def enhance(self, factor):
+        return Image(_pil_native.image_adjust_color(self._image._handle, float(factor)))
+
+
+class Sharpness(_Enhance):
+    """Adjust image sharpness.
+
+    factor=0.0 gives blurred, 1.0 gives original, >1.0 sharpens.
+    """
+
+    def __init__(self, image):
+        self._image = image
+
+    def enhance(self, factor):
+        return Image(_pil_native.image_adjust_sharpness(self._image._handle, float(factor)))
