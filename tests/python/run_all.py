@@ -32,6 +32,10 @@ test_files = [
     "test_imagefont",
     "test_imagedraw_extra",
     "test_mode1_draw",
+    "test_image_paste_negative",
+    "test_imagechops_values",
+    "test_image_getdata_upstream",
+    "test_imageops_values",
 ]
 
 total_pass = 0
