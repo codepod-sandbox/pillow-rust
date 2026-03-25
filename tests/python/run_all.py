@@ -52,6 +52,22 @@ test_files = [
     "test_imagedraw_text",
     "test_image_getchannel",
     "test_image_resize_exact",
+    "test_image_crop_exact",
+    "test_image_paste_exact",
+    "test_imageops_exact",
+    "test_image_rotate_exact",
+    "test_imagedraw_shapes",
+    "test_image_point_exact",
+    "test_imagestat_exact",
+    "test_image_convert_exact",
+    "test_image_alpha_composite",
+    "test_imagefilter_kernels",
+    "test_image_new_modes",
+    "test_image_putpixel_exact",
+    "test_image_resize_methods",
+    "test_imagechops_ops",
+    "test_image_transform_exact",
+    "test_imageenhance_ops",
 ]
 
 total_pass = 0

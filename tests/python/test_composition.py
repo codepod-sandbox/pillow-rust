@@ -60,14 +60,14 @@ def test_composite_mask_black():
 def test_alpha_composite_opaque():
     dst = Image.new("RGBA", (10, 10), (255, 0, 0, 255))
     src = Image.new("RGBA", (10, 10), (0, 255, 0, 255))
-    out = dst.alpha_composite(src)
-    assert out.getpixel((5, 5)) == (0, 255, 0, 255)
+    dst.alpha_composite(src)  # in-place, returns None
+    assert dst.getpixel((5, 5)) == (0, 255, 0, 255)
 
 def test_alpha_composite_transparent():
     dst = Image.new("RGBA", (10, 10), (255, 0, 0, 255))
     src = Image.new("RGBA", (10, 10), (0, 255, 0, 0))
-    out = dst.alpha_composite(src)
-    assert out.getpixel((5, 5)) == (255, 0, 0, 255)
+    dst.alpha_composite(src)  # in-place, returns None
+    assert dst.getpixel((5, 5)) == (255, 0, 0, 255)
 
 
 # ---------------------------------------------------------------------------

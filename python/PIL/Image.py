@@ -625,7 +625,6 @@ class Image:
         if self.mode != "RGBA":
             composited = composited.convert(self.mode)
         _pil_native.image_paste(self._handle, composited._handle, dst_x, dst_y)
-        return self
 
     # -- channel access -----------------------------------------------------
 

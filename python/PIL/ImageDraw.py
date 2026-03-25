@@ -18,12 +18,14 @@ class ImageDraw:
         *xy* is either ``[(x0, y0), (x1, y1)]`` or ``[x0, y0, x1, y1]``.
         """
         coords = _normalise_box(xy)
-        color = fill if fill is not None else (outline if outline is not None else (255, 255, 255))
-        if isinstance(color, int):
-            color = (color, color, color)
-        _pil_native.draw_rectangle(
-            self._image._handle, list(coords), list(color), fill is not None
-        )
+        if fill is not None:
+            fc = fill if not isinstance(fill, int) else (fill, fill, fill)
+            _pil_native.draw_rectangle(self._image._handle, list(coords), list(fc), True)
+        if outline is not None:
+            oc = outline if not isinstance(outline, int) else (outline, outline, outline)
+            _pil_native.draw_rectangle(self._image._handle, list(coords), list(oc), False)
+        if fill is None and outline is None:
+            _pil_native.draw_rectangle(self._image._handle, list(coords), [255, 255, 255], True)
 
     def ellipse(self, xy, fill=None, outline=None, width=1):
         """Draw an ellipse.
@@ -31,12 +33,14 @@ class ImageDraw:
         *xy* is either ``[(x0, y0), (x1, y1)]`` or ``[x0, y0, x1, y1]``.
         """
         coords = _normalise_box(xy)
-        color = fill if fill is not None else (outline if outline is not None else (255, 255, 255))
-        if isinstance(color, int):
-            color = (color, color, color)
-        _pil_native.draw_ellipse(
-            self._image._handle, list(coords), list(color), fill is not None
-        )
+        if fill is not None:
+            fc = fill if not isinstance(fill, int) else (fill, fill, fill)
+            _pil_native.draw_ellipse(self._image._handle, list(coords), list(fc), True)
+        if outline is not None:
+            oc = outline if not isinstance(outline, int) else (outline, outline, outline)
+            _pil_native.draw_ellipse(self._image._handle, list(coords), list(oc), False)
+        if fill is None and outline is None:
+            _pil_native.draw_ellipse(self._image._handle, list(coords), [255, 255, 255], True)
 
     def line(self, xy, fill=None, width=1):
         """Draw a line between points.
