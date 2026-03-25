@@ -2,8 +2,11 @@
 Tests adapted from upstream Pillow test_image_paste.py.
 
 https://github.com/python-pillow/Pillow/blob/main/Tests/test_image_paste.py
+
+The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
 
+import pytest
 from PIL import Image
 from conftest import assert_image, assert_image_equal
 
@@ -228,3 +231,62 @@ def test_point_function_invert():
     im = Image.new("L", (10, 10), 100)
     out = im.point(lambda x: 255 - x)
     assert out.getpixel((0, 0)) == 155
+
+
+# ---------------------------------------------------------------------------
+# Upstream tests — test_image_paste.py
+# ---------------------------------------------------------------------------
+
+
+def test_paste_image_same_mode():
+    """Upstream: pasting an image of the same mode."""
+    dst = Image.new("RGB", (20, 20), (0, 0, 0))
+    src = Image.new("RGB", (5, 5), (255, 0, 0))
+    dst.paste(src, (3, 3))
+    assert dst.getpixel((3, 3)) == (255, 0, 0)
+    assert dst.getpixel((0, 0)) == (0, 0, 0)
+
+
+def test_paste_with_mask():
+    """Upstream: paste with an L mask blends based on alpha."""
+    dst = Image.new("RGB", (10, 10), (0, 0, 0))
+    src = Image.new("RGB", (5, 5), (200, 200, 200))
+    mask = Image.new("L", (5, 5), 255)  # fully opaque
+    dst.paste(src, (0, 0), mask)
+    assert dst.getpixel((2, 2)) == (200, 200, 200)
+
+
+def test_paste_zero_mask():
+    """Upstream: paste with a zero (transparent) mask leaves destination unchanged."""
+    dst = Image.new("RGB", (10, 10), (0, 0, 255))
+    src = Image.new("RGB", (5, 5), (255, 0, 0))
+    mask = Image.new("L", (5, 5), 0)  # fully transparent
+    dst.paste(src, (0, 0), mask)
+    assert dst.getpixel((2, 2)) == (0, 0, 255)
+
+
+def test_paste_at_origin():
+    """Upstream: pasting at (0,0) works correctly."""
+    dst = Image.new("RGB", (10, 10), (0, 0, 0))
+    src = Image.new("RGB", (3, 3), (100, 100, 100))
+    dst.paste(src, (0, 0))
+    assert dst.getpixel((0, 0)) == (100, 100, 100)
+    assert dst.getpixel((2, 2)) == (100, 100, 100)
+    assert dst.getpixel((3, 3)) == (0, 0, 0)
+
+
+def test_paste_RGBA_mask():
+    """Upstream: paste with an RGBA mask image uses alpha channel."""
+    dst = Image.new("RGB", (10, 10), (0, 0, 0))
+    src = Image.new("RGBA", (5, 5), (255, 0, 0, 255))
+    dst.paste(src, (0, 0), src)
+    assert dst.getpixel((2, 2)) == (255, 0, 0)
+
+
+def test_paste_L_into_RGB():
+    """Upstream: pasting an L image into RGB via mode conversion."""
+    dst = Image.new("RGB", (10, 10), (0, 0, 0))
+    src = Image.new("L", (5, 5), 200)
+    src_rgb = src.convert("RGB")
+    dst.paste(src_rgb, (0, 0))
+    assert dst.getpixel((2, 2)) == (200, 200, 200)

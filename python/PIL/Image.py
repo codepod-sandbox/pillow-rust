@@ -173,14 +173,30 @@ class Image:
     # -- pixel access -------------------------------------------------------
 
     def getpixel(self, xy):
-        """Return the pixel value at (x, y)."""
-        return _pil_native.image_getpixel(self._handle, xy[0], xy[1])
+        """Return the pixel value at (x, y). Negative coordinates wrap around."""
+        x, y = xy[0], xy[1]
+        w, h = self.size
+        if x < 0:
+            x = x + w
+        if y < 0:
+            y = y + h
+        if x < 0 or x >= w or y < 0 or y >= h:
+            raise IndexError(f"pixel coordinate ({xy[0]}, {xy[1]}) out of range")
+        return _pil_native.image_getpixel(self._handle, x, y)
 
     def putpixel(self, xy, color):
-        """Set the pixel at (x, y) to *color*."""
+        """Set the pixel at (x, y) to *color*. Negative coordinates wrap around."""
+        x, y = xy[0], xy[1]
+        w, h = self.size
+        if x < 0:
+            x = x + w
+        if y < 0:
+            y = y + h
+        if x < 0 or x >= w or y < 0 or y >= h:
+            raise IndexError(f"pixel coordinate ({xy[0]}, {xy[1]}) out of range")
         if isinstance(color, int):
             color = (color,)
-        _pil_native.image_putpixel(self._handle, xy[0], xy[1], list(color))
+        _pil_native.image_putpixel(self._handle, x, y, list(color))
 
     # -- transforms ---------------------------------------------------------
 
@@ -188,6 +204,8 @@ class Image:
         """Return a resized copy."""
         if isinstance(size, list):
             size = tuple(size)
+        if size[0] <= 0 or size[1] <= 0:
+            raise ValueError(f"invalid size: {size}")
         if resample is not None:
             return Image(_pil_native.image_resize(self._handle, size[0], size[1], resample))
         return Image(_pil_native.image_resize(self._handle, size[0], size[1]))
@@ -212,14 +230,85 @@ class Image:
         new_im._handle = None  # prevent double-close
 
     def crop(self, box=None):
-        """Return a cropped copy. *box* is (left, upper, right, lower)."""
+        """Return a cropped copy. *box* is (left, upper, right, lower).
+
+        Float coordinates are rounded to the nearest integer.
+        Raises ValueError if right < left or bottom < top.
+        Crop regions outside the image boundaries are filled with zero.
+        """
         if box is None:
             return self.copy()
-        return Image(_pil_native.image_crop(self._handle, list(box)))
+        left, upper, right, lower = (int(round(v)) for v in box)
+        if right < left:
+            raise ValueError(
+                f"Coordinate 'right' is less than 'left': {right} < {left}"
+            )
+        if lower < upper:
+            raise ValueError(
+                f"Coordinate 'lower' is less than 'upper': {lower} < {upper}"
+            )
+        iw, ih = self.size
+        # Intersection of crop box with image bounds
+        src_left = max(left, 0)
+        src_upper = max(upper, 0)
+        src_right = min(right, iw)
+        src_lower = min(lower, ih)
+        # If fully within image, delegate to Rust directly
+        if left >= 0 and upper >= 0 and right <= iw and lower <= ih:
+            return Image(_pil_native.image_crop(self._handle, [left, upper, right, lower]))
+        # Otherwise create a zero-filled output and paste the valid intersection
+        out_w = right - left
+        out_h = lower - upper
+        out = new(self.mode, (out_w, out_h), 0)
+        if src_left < src_right and src_upper < src_lower:
+            inner = Image(_pil_native.image_crop(self._handle, [src_left, src_upper, src_right, src_lower]))
+            dst_left = src_left - left
+            dst_upper = src_upper - upper
+            _pil_native.image_paste(out._handle, inner._handle, dst_left, dst_upper)
+        return out
 
-    def rotate(self, angle, resample=None, expand=False, **_kw):
-        """Return a rotated copy (counter-clockwise, in degrees)."""
-        return Image(_pil_native.image_rotate(self._handle, float(angle), expand))
+    def rotate(self, angle, resample=None, expand=False, fillcolor=None, **_kw):
+        """Return a rotated copy (counter-clockwise, in degrees).
+
+        If *fillcolor* is given, the areas outside the rotation are filled with
+        that color instead of black/transparent.
+        """
+        if fillcolor is None:
+            return Image(_pil_native.image_rotate(self._handle, float(angle), bool(expand)))
+
+        orig_mode = self.mode
+        # Rotate in RGBA so empty areas become transparent (0,0,0,0)
+        if orig_mode == "RGBA":
+            rotated = Image(_pil_native.image_rotate(self._handle, float(angle), bool(expand)))
+        else:
+            rgba_handle = _pil_native.image_convert(self._handle, "RGBA")
+            try:
+                rot_handle = _pil_native.image_rotate(rgba_handle, float(angle), bool(expand))
+            finally:
+                _pil_native.image_close(rgba_handle)
+            rotated = Image(rot_handle)
+
+        # Resolve fillcolor to a 4-element [R, G, B, A] list
+        fc = _resolve_color(fillcolor, "RGBA")
+        while len(fc) < 4:
+            fc.append(255)
+
+        # Composite: replace transparent pixels with fillcolor
+        rot_bytes = list(rotated.tobytes())
+        out_bytes = []
+        for i in range(0, len(rot_bytes), 4):
+            if rot_bytes[i + 3] == 0:
+                out_bytes.extend(fc)
+            else:
+                out_bytes.extend(rot_bytes[i : i + 4])
+
+        w, h = rotated.size
+        result = new("RGBA", (w, h), 0)
+        _pil_native.image_putdata(result._handle, out_bytes)
+
+        if orig_mode != "RGBA":
+            return result.convert(orig_mode)
+        return result
 
     def transpose(self, method):
         """Return a transposed copy (flip / rotate by 90-degree multiples)."""
@@ -331,6 +420,49 @@ class Image:
                 if isinstance(box, (tuple, list)):
                     x = box[0]
                     y = box[1]
+            if mask is not None:
+                # Masked paste: blend src into dst using mask as alpha
+                src = im_or_color
+                dw, dh = self.size
+                sw, sh = src.size
+                # Determine the number of bytes per pixel in dst
+                n_dst = len(self.getbands())
+                n_src = len(src.getbands())
+                # Get mask as L (if it's RGBA use the alpha channel)
+                if mask.mode == "RGBA":
+                    mask_l = mask.split()[3]
+                elif mask.mode == "L":
+                    mask_l = mask
+                else:
+                    mask_l = mask.convert("L")
+                mask_data = list(mask_l.getdata())
+                # We use tobytes/frombytes for fast per-pixel work
+                dst_bytes = bytearray(self.tobytes())
+                src_bytes = bytearray(src.tobytes())
+                for py in range(sh):
+                    dy = y + py
+                    if dy < 0 or dy >= dh:
+                        continue
+                    for px in range(sw):
+                        dx = x + px
+                        if dx < 0 or dx >= dw:
+                            continue
+                        alpha = mask_data[py * sw + px]
+                        if alpha == 0:
+                            continue
+                        d_off = (dy * dw + dx) * n_dst
+                        s_off = (py * sw + px) * n_src
+                        if alpha == 255:
+                            for c in range(min(n_dst, n_src)):
+                                dst_bytes[d_off + c] = src_bytes[s_off + c]
+                        else:
+                            inv = 255 - alpha
+                            for c in range(min(n_dst, n_src)):
+                                dst_bytes[d_off + c] = (
+                                    src_bytes[s_off + c] * alpha + dst_bytes[d_off + c] * inv
+                                ) // 255
+                _pil_native.image_putdata(self._handle, list(dst_bytes))
+                return
             _pil_native.image_paste(self._handle, im_or_color._handle, x, y)
         elif isinstance(im_or_color, (tuple, list)):
             # Fill box with color

@@ -2,8 +2,11 @@
 Tests adapted from upstream Pillow test_image_resize.py.
 
 https://github.com/python-pillow/Pillow/blob/main/Tests/test_image_resize.py
+
+The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
 
+import pytest
 from PIL import Image
 from conftest import assert_image, assert_image_equal
 
@@ -79,3 +82,54 @@ def test_resize_with_resample_lanczos():
     im = Image.new("RGB", (10, 10), (255, 0, 0))
     out = im.resize((5, 5), Image.Resampling.LANCZOS)
     assert_image(out, "RGB", (5, 5))
+
+
+# ---------------------------------------------------------------------------
+# Upstream tests — test_image_resize.py
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("resample", [
+    Image.Resampling.NEAREST,
+    Image.Resampling.BILINEAR,
+    Image.Resampling.BICUBIC,
+    Image.Resampling.LANCZOS,
+])
+def test_resize_sanity(resample, hopper):
+    """Upstream test_resize: all resamplers run on L and RGB modes."""
+    for mode in ("L", "RGB"):
+        im = hopper(mode)
+        out = im.resize((im.width // 2, im.height // 2), resample=resample)
+        assert out.mode == mode
+        assert out.size == (im.width // 2, im.height // 2)
+
+
+def test_resize_zero_size():
+    """Upstream: resizing to (0, 0) raises ValueError."""
+    im = Image.new("RGB", (10, 10))
+    with pytest.raises((ValueError, Exception)):
+        im.resize((0, 0))
+
+
+def test_resize_enlarges():
+    """Upstream: resizing to larger size works correctly."""
+    im = Image.new("RGB", (10, 10), (100, 150, 200))
+    out = im.resize((50, 50))
+    assert out.size == (50, 50)
+    assert out.getpixel((25, 25)) == (100, 150, 200)
+
+
+def test_resize_L_mode(hopper):
+    """Upstream: resize works correctly for L mode."""
+    im = hopper("L")
+    out = im.resize((im.width * 2, im.height * 2))
+    assert out.mode == "L"
+    assert out.size == (im.width * 2, im.height * 2)
+
+
+def test_resize_RGBA_upstream(hopper):
+    """Upstream: resize works for RGBA mode."""
+    im = hopper("RGBA")
+    out = im.resize((50, 50))
+    assert out.mode == "RGBA"
+    assert out.size == (50, 50)

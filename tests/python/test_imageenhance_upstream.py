@@ -1,4 +1,11 @@
-"""Tests for PIL.ImageEnhance module."""
+"""
+Tests for PIL.ImageEnhance module.
+
+Tests adapted from upstream Pillow test_imageenhance.py:
+  https://github.com/python-pillow/Pillow/blob/main/Tests/test_imageenhance.py
+
+The Pillow licence (MIT-CMU) applies to test logic ported from that file.
+"""
 
 from PIL import Image, ImageEnhance
 
@@ -108,3 +115,61 @@ def test_enhance_preserves_size():
         out = Enhancer(im).enhance(1.5)
         assert out.size == (50, 30)
         assert out.mode == "RGB"
+
+
+# --- Upstream tests ---
+
+def test_sanity():
+    """Upstream test_sanity: all enhancers run without error.
+
+    Adapted from test_imageenhance.py in Pillow.
+    """
+    im = Image.new("RGB", (128, 128))
+    for Enhancer in [ImageEnhance.Color, ImageEnhance.Contrast,
+                     ImageEnhance.Brightness, ImageEnhance.Sharpness]:
+        for factor in (0.0, 0.5, 1.0, 2.0):
+            out = Enhancer(im).enhance(factor)
+            assert out.mode == "RGB"
+            assert out.size == (128, 128)
+
+
+def test_crash():
+    """Upstream test_crash: Sharpness on a 1x1 image must not crash.
+
+    Adapted from test_imageenhance.py in Pillow (issue with tiny images
+    in the smooth filter path).
+    """
+    im = Image.new("RGB", (1, 1))
+    ImageEnhance.Sharpness(im).enhance(0)
+
+
+def test_alpha_preserved_brightness():
+    """Upstream: alpha channel unchanged after Brightness enhancement.
+
+    Adapted from test_imageenhance.py in Pillow.
+    """
+    im = Image.new("RGBA", (10, 10), (100, 100, 100, 200))
+    out = ImageEnhance.Brightness(im).enhance(0.5)
+    # Alpha must be unchanged
+    assert out.getpixel((5, 5))[3] == 200
+
+
+def test_alpha_preserved_contrast():
+    """Upstream: alpha channel unchanged after Contrast enhancement."""
+    im = Image.new("RGBA", (10, 10), (100, 100, 100, 128))
+    out = ImageEnhance.Contrast(im).enhance(2.0)
+    assert out.getpixel((5, 5))[3] == 128
+
+
+def test_alpha_preserved_color():
+    """Upstream: alpha channel unchanged after Color enhancement."""
+    im = Image.new("RGBA", (10, 10), (200, 100, 50, 64))
+    out = ImageEnhance.Color(im).enhance(0.0)
+    assert out.getpixel((5, 5))[3] == 64
+
+
+def test_alpha_preserved_sharpness():
+    """Upstream: alpha channel unchanged after Sharpness enhancement."""
+    im = Image.new("RGBA", (10, 10), (100, 100, 100, 200))
+    out = ImageEnhance.Sharpness(im).enhance(2.0)
+    assert out.getpixel((5, 5))[3] == 200

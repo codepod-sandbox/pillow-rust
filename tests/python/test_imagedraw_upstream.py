@@ -2,8 +2,11 @@
 Tests adapted from upstream Pillow test_imagedraw.py.
 
 https://github.com/python-pillow/Pillow/blob/main/Tests/test_imagedraw.py
+
+The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
 
+import pytest
 from PIL import Image, ImageDraw
 from conftest import assert_image, assert_image_equal
 
@@ -177,11 +180,82 @@ def test_multiple_shapes():
 # ---------------------------------------------------------------------------
 
 
-def test_draw_then_save():
+def test_draw_then_save(tmp_path):
     im = Image.new("RGB", (50, 50), (255, 255, 255))
     draw = ImageDraw.Draw(im)
     draw.rectangle([(10, 10), (40, 40)], fill=(0, 0, 0))
-    im.save("/tmp/_pil_upstream_draw.png")
-    im2 = Image.open("/tmp/_pil_upstream_draw.png")
+    path = str(tmp_path / "draw.png")
+    im.save(path)
+    im2 = Image.open(path)
     assert im2.getpixel((25, 25)) == (0, 0, 0)
     assert im2.getpixel((0, 0)) == (255, 255, 255)
+
+
+# ---------------------------------------------------------------------------
+# Upstream tests — test_imagedraw.py
+# ---------------------------------------------------------------------------
+
+
+def test_ellipse_symmetric():
+    """Upstream: a circle ellipse should produce symmetric results.
+
+    Adapted from test_imagedraw.py in Pillow.
+    """
+    for diameter in (4, 5, 6, 7, 8):
+        im = Image.new("RGB", (diameter, diameter))
+        draw = ImageDraw.Draw(im)
+        draw.ellipse([(0, 0), (diameter - 1, diameter - 1)], fill=(255, 255, 255))
+        # Top half must equal flipped bottom half
+        top = im.crop((0, 0, diameter, diameter // 2))
+        bottom = im.crop((0, diameter - diameter // 2, diameter, diameter))
+        flipped = bottom.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        assert top.tobytes() == flipped.tobytes()
+
+
+def test_incorrectly_ordered_coordinates():
+    """Upstream: Draw methods should handle reversed coordinates gracefully.
+
+    Adapted from test_imagedraw.py in Pillow — ensures rectangle with
+    swapped corners still draws correctly (or raises a clear error).
+    """
+    im = Image.new("RGB", (W, H))
+    draw = ImageDraw.Draw(im)
+    # Pillow normalizes reversed coordinates for rectangle
+    draw.rectangle([(X1, Y1), (X0, Y0)], fill=(255, 0, 0))
+    # Center pixel should be filled regardless of coordinate order
+    assert im.getpixel((50, 50)) == (255, 0, 0)
+
+
+def test_line_zero_length():
+    """Upstream: a zero-length line (point) should draw the endpoint pixel."""
+    im = Image.new("RGB", (10, 10))
+    draw = ImageDraw.Draw(im)
+    draw.line([(5, 5), (5, 5)], fill=(255, 0, 0))
+    assert im.getpixel((5, 5)) == (255, 0, 0)
+
+
+def test_rectangle_L_mode():
+    """Upstream: drawing on L mode images."""
+    im = Image.new("L", (50, 50))
+    draw = ImageDraw.Draw(im)
+    draw.rectangle([(10, 10), (40, 40)], fill=200)
+    assert im.getpixel((25, 25)) == 200
+    assert im.getpixel((0, 0)) == 0
+
+
+def test_ellipse_L_mode():
+    """Upstream: ellipse fill on L mode image."""
+    im = Image.new("L", (50, 50))
+    draw = ImageDraw.Draw(im)
+    draw.ellipse([(10, 10), (40, 40)], fill=128)
+    assert im.getpixel((25, 25)) == 128
+
+
+@pytest.mark.parametrize("mode", ("RGB", "RGBA", "L"))
+def test_draw_does_not_change_mode(mode):
+    """Upstream: drawing operations must not alter the image mode."""
+    im = Image.new(mode, (50, 50))
+    draw = ImageDraw.Draw(im)
+    fill = (255, 0, 0) if mode in ("RGB", "RGBA") else 200
+    draw.rectangle([(5, 5), (45, 45)], fill=fill)
+    assert im.mode == mode

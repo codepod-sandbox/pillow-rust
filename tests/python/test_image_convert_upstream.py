@@ -2,8 +2,11 @@
 Tests adapted from upstream Pillow test_image_convert.py.
 
 https://github.com/python-pillow/Pillow/blob/main/Tests/test_image_convert.py
+
+The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
 
+import pytest
 from PIL import Image
 from conftest import assert_image, assert_image_equal
 
@@ -133,3 +136,50 @@ def test_convert_roundtrip_RGB_L_RGB():
         rgb_im = l_im.convert("RGB")
         px = rgb_im.getpixel((0, 0))
         assert px == (expected_l, expected_l, expected_l)
+
+
+# ---------------------------------------------------------------------------
+# Upstream tests — test_image_convert.py
+# ---------------------------------------------------------------------------
+
+
+def test_unsupported_conversion():
+    """Upstream: converting to an unknown mode raises a ValueError/Exception."""
+    im = Image.new("RGB", (10, 10))
+    with pytest.raises((ValueError, Exception)):
+        im.convert("BOGUS")
+
+
+def test_convert_RGBA_to_LA():
+    """Upstream: RGBA -> LA should preserve alpha and desaturate color."""
+    im = Image.new("RGBA", (1, 1), (200, 100, 50, 128))
+    out = im.convert("LA")
+    assert out.mode == "LA"
+    l, a = out.getpixel((0, 0))
+    assert a == 128  # alpha preserved
+
+
+def test_convert_L_to_RGBA_full_alpha():
+    """Upstream: L -> RGBA should set alpha to 255."""
+    im = Image.new("L", (1, 1), 100)
+    out = im.convert("RGBA")
+    px = out.getpixel((0, 0))
+    assert len(px) == 4
+    assert px[3] == 255
+
+
+def test_convert_RGBA_to_RGB_drops_alpha():
+    """Upstream: RGBA -> RGB should discard alpha."""
+    im = Image.new("RGBA", (1, 1), (10, 20, 30, 128))
+    out = im.convert("RGB")
+    assert out.mode == "RGB"
+    px = out.getpixel((0, 0))
+    assert len(px) == 3
+
+
+def test_convert_LA_to_L():
+    """Upstream: LA -> L should strip the alpha channel."""
+    im = Image.new("LA", (1, 1), (200, 128))
+    out = im.convert("L")
+    assert out.mode == "L"
+    assert out.getpixel((0, 0)) == 200

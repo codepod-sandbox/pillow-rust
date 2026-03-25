@@ -7,6 +7,8 @@ from PIL import Image
 
 def autocontrast(image, cutoff=0, ignore=None):
     """Maximize image contrast by remapping pixel values to span 0-255."""
+    if image.mode not in ("L", "RGB"):
+        raise OSError(f"not supported for {image.mode!r} images")
     bands = image.getbands()
     if len(bands) == 1:
         # Single channel
@@ -93,3 +95,41 @@ def expand(image, border=0, fill=0):
     out = Image.new(image.mode, (w + left + right, h + top + bottom), fill)
     out.paste(image, (left, top))
     return out
+
+
+def flip(image):
+    """Flip the image vertically (top to bottom)."""
+    return image.transpose(Image.FLIP_TOP_BOTTOM)
+
+
+def mirror(image):
+    """Flip the image horizontally (left to right)."""
+    return image.transpose(Image.FLIP_LEFT_RIGHT)
+
+
+def grayscale(image):
+    """Convert the image to grayscale."""
+    return image.convert("L")
+
+
+def invert(image):
+    """Invert all pixel values (255 - v for each channel).
+
+    Supports L and RGB modes.
+    """
+    if image.mode not in ("L", "RGB"):
+        raise OSError(f"not supported for {image.mode!r} images")
+    return image.point(lambda v: 255 - v)
+
+
+def scale(image, factor, resample=None):
+    """Return a rescaled image by *factor*.
+
+    A factor greater than 1 expands the image; less than 1 shrinks it.
+    """
+    if factor < 0:
+        raise ValueError("the factor must be greater than 0")
+    w, h = image.size
+    new_w = max(1, round(w * factor))
+    new_h = max(1, round(h * factor))
+    return image.resize((new_w, new_h), resample=resample)

@@ -103,10 +103,15 @@ def Draw(im):
 # ---------------------------------------------------------------------------
 
 def _normalise_box(xy):
-    """Flatten ``[(x0,y0),(x1,y1)]`` or ``[x0,y0,x1,y1]`` to flat list."""
+    """Flatten ``[(x0,y0),(x1,y1)]`` or ``[x0,y0,x1,y1]`` to flat list.
+
+    Coordinates are sorted so that x0 <= x1 and y0 <= y1 (upstream behaviour).
+    """
     if len(xy) == 2 and hasattr(xy[0], "__len__"):
-        return [xy[0][0], xy[0][1], xy[1][0], xy[1][1]]
-    return list(xy)
+        x0, y0, x1, y1 = xy[0][0], xy[0][1], xy[1][0], xy[1][1]
+    else:
+        x0, y0, x1, y1 = xy[0], xy[1], xy[2], xy[3]
+    return [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
 
 
 def _normalise_xy(xy):

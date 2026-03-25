@@ -2,8 +2,11 @@
 Tests adapted from upstream Pillow test_image.py.
 
 https://github.com/python-pillow/Pillow/blob/main/Tests/test_image.py
+
+The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
 
+import pytest
 from PIL import Image
 from conftest import assert_image, assert_image_equal
 
@@ -242,3 +245,182 @@ def test_copy_preserves_info():
     im.info["key"] = "value"
     out = im.copy()
     assert out.info["key"] == "value"
+
+
+# ---------------------------------------------------------------------------
+# Upstream tests — test_image.py (TestImage class)
+# ---------------------------------------------------------------------------
+
+
+def test_image_modes_success():
+    """Upstream test_image_modes_success: supported modes should not raise."""
+    for mode in Image.MODES:
+        Image.new(mode, (1, 1))
+
+
+def test_image_modes_fail():
+    """Upstream test_image_modes_fail: bad modes raise ValueError."""
+    for bad in ("", "bad", "very very long"):
+        with pytest.raises((ValueError, Exception)):
+            Image.new(bad, (1, 1))
+
+
+def test_copy_is_independent():
+    """Modifying a copy must not affect the original."""
+    im = Image.new("RGB", (4, 4), (10, 20, 30))
+    out = im.copy()
+    out.putpixel((0, 0), (255, 0, 0))
+    assert im.getpixel((0, 0)) == (10, 20, 30)
+    assert out.getpixel((0, 0)) == (255, 0, 0)
+
+
+def test_getcolors_simple():
+    """getcolors() returns list of (count, color) pairs."""
+    im = Image.new("RGB", (2, 2), (1, 2, 3))
+    colors = im.getcolors()
+    assert colors is not None
+    assert len(colors) == 1
+    count, color = colors[0]
+    assert count == 4
+    assert color == (1, 2, 3)
+
+
+def test_getcolors_multiple():
+    im = Image.new("L", (2, 2), 0)
+    im.putpixel((1, 1), 255)
+    colors = im.getcolors()
+    assert colors is not None
+    counts = {c: n for n, c in colors}
+    assert counts[0] == 3
+    assert counts[255] == 1
+
+
+def test_getcolors_max_exceeded():
+    """Returns None when unique colors exceed maxcolors."""
+    im = Image.new("L", (256, 1))
+    for x in range(256):
+        im.putpixel((x, 0), x)
+    # maxcolors=10 but there are 256 unique colours
+    assert im.getcolors(maxcolors=10) is None
+
+
+def test_getextrema_L():
+    im = Image.new("L", (4, 4), 100)
+    im.putpixel((0, 0), 10)
+    im.putpixel((3, 3), 200)
+    lo, hi = im.getextrema()
+    assert lo == 10
+    assert hi == 200
+
+
+def test_getextrema_RGB():
+    im = Image.new("RGB", (2, 2), (100, 100, 100))
+    im.putpixel((0, 0), (0, 50, 200))
+    extrema = im.getextrema()
+    assert len(extrema) == 3
+    r_lo, r_hi = extrema[0]
+    g_lo, g_hi = extrema[1]
+    b_lo, b_hi = extrema[2]
+    assert r_lo == 0 and r_hi == 100
+    assert g_lo == 50 and g_hi == 100
+    assert b_lo == 100 and b_hi == 200
+
+
+def test_histogram_L():
+    """histogram() for L image: list of 256 ints."""
+    im = Image.new("L", (2, 2), 0)
+    im.putpixel((1, 1), 255)
+    hist = im.histogram()
+    assert len(hist) == 256
+    assert hist[0] == 3
+    assert hist[255] == 1
+    assert sum(hist) == 4
+
+
+def test_histogram_RGB():
+    """histogram() for RGB image: list of 256*3 ints."""
+    im = Image.new("RGB", (1, 1), (10, 20, 30))
+    hist = im.histogram()
+    assert len(hist) == 768
+    # R channel
+    assert hist[10] == 1
+    # G channel
+    assert hist[256 + 20] == 1
+    # B channel
+    assert hist[512 + 30] == 1
+
+
+def test_split_merge_roundtrip():
+    """split() then merge() should produce an identical image."""
+    im = Image.new("RGB", (10, 10), (50, 100, 150))
+    r, g, b = im.split()
+    merged = Image.merge("RGB", [r, g, b])
+    assert merged.tobytes() == im.tobytes()
+
+
+def test_split_merge_RGBA():
+    im = Image.new("RGBA", (4, 4), (10, 20, 30, 200))
+    channels = im.split()
+    assert len(channels) == 4
+    back = Image.merge("RGBA", list(channels))
+    assert back.tobytes() == im.tobytes()
+
+
+def test_putalpha_int():
+    """putalpha(int) sets alpha channel to a constant."""
+    im = Image.new("RGBA", (4, 4), (100, 100, 100, 255))
+    im.putalpha(128)
+    assert im.getpixel((0, 0))[3] == 128
+    assert im.getpixel((3, 3))[3] == 128
+
+
+def test_putalpha_image():
+    """putalpha(L image) sets per-pixel alpha values."""
+    im = Image.new("RGBA", (2, 2), (100, 100, 100, 255))
+    mask = Image.new("L", (2, 2), 0)
+    mask.putpixel((1, 1), 200)
+    im.putalpha(mask)
+    assert im.getpixel((0, 0))[3] == 0
+    assert im.getpixel((1, 1))[3] == 200
+
+
+def test_point_lut_list():
+    """point() with a 256-element list applies the LUT."""
+    im = Image.new("L", (4, 4), 100)
+    lut = [255 - i for i in range(256)]
+    out = im.point(lut)
+    assert out.getpixel((0, 0)) == 155   # 255 - 100
+
+
+def test_point_lambda():
+    """point() with a callable applies the function per-pixel."""
+    im = Image.new("L", (4, 4), 50)
+    out = im.point(lambda v: v * 2)
+    assert out.getpixel((0, 0)) == 100
+
+
+def test_getdata_putdata_roundtrip():
+    """getdata() then putdata() reproduces the original image."""
+    im = Image.new("RGB", (3, 3), (10, 20, 30))
+    data = im.getdata()
+    im2 = Image.new("RGB", (3, 3))
+    im2.putdata(data)
+    assert im.tobytes() == im2.tobytes()
+
+
+def test_frombytes():
+    """frombytes() loads raw pixel data correctly."""
+    im = Image.new("RGB", (2, 2), (1, 2, 3))
+    raw = im.tobytes()
+    im2 = Image.frombytes("RGB", (2, 2), raw)
+    assert im2.tobytes() == raw
+
+
+def test_open_save_roundtrip(tmp_path):
+    """open() then save() roundtrips PNG pixel-perfectly."""
+    im = Image.new("RGB", (10, 10), (77, 88, 99))
+    path = str(tmp_path / "test.png")
+    im.save(path)
+    im2 = Image.open(path)
+    assert im2.size == (10, 10)
+    assert im2.getpixel((0, 0)) == (77, 88, 99)

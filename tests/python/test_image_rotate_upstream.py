@@ -2,8 +2,11 @@
 Tests adapted from upstream Pillow test_image_rotate.py.
 
 https://github.com/python-pillow/Pillow/blob/main/Tests/test_image_rotate.py
+
+The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
 
+import pytest
 from PIL import Image
 from conftest import assert_image, assert_image_equal
 
@@ -93,3 +96,53 @@ def test_rotate_90_mode_preservation(hopper):
         im = hopper(mode)
         out = im.rotate(90)
         assert out.mode == mode
+
+
+# ---------------------------------------------------------------------------
+# Upstream tests — test_image_rotate.py
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("angle", (0, 90, 180, 270, 360))
+def test_rotate_sanity(angle, hopper):
+    """Upstream test_rotate: rotate must not crash for standard angles."""
+    im = hopper("RGB")
+    out = im.rotate(angle)
+    assert out.mode == "RGB"
+
+
+def test_rotate_expand_90():
+    """Upstream: expand=True swaps width/height for 90-degree rotation."""
+    im = Image.new("RGB", (100, 50))
+    out = im.rotate(90, expand=True)
+    assert out.size == (50, 100)
+
+
+def test_rotate_expand_180():
+    """Upstream: expand=True on 180° keeps same dimensions."""
+    im = Image.new("RGB", (100, 50))
+    out = im.rotate(180, expand=True)
+    assert out.size == (100, 50)
+
+
+def test_rotate_expand_270():
+    """Upstream: expand=True swaps width/height for 270-degree rotation."""
+    im = Image.new("RGB", (100, 50))
+    out = im.rotate(270, expand=True)
+    assert out.size == (50, 100)
+
+
+def test_rotate_expand_true_90():
+    """Upstream: expand=True swaps width and height for 90° rotation."""
+    im = Image.new("RGB", (100, 50))
+    out = im.rotate(90, expand=True)
+    # expand=True should give transposed dimensions
+    assert out.size == (50, 100)
+
+
+def test_rotate_noop():
+    """Upstream: rotating by 0 or 360 produces an identical image."""
+    im = Image.new("RGB", (10, 10), (1, 2, 3))
+    for angle in (0, 360):
+        out = im.rotate(angle)
+        assert_image_equal(im, out)

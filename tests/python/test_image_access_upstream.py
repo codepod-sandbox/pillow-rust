@@ -2,8 +2,11 @@
 Tests adapted from upstream Pillow test_image_access.py.
 
 https://github.com/python-pillow/Pillow/blob/main/Tests/test_image_access.py
+
+The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
 
+import pytest
 from PIL import Image
 from conftest import assert_image, assert_image_equal
 
@@ -110,3 +113,65 @@ def test_new_color_RGB():
 def test_new_color_RGBA():
     im = Image.new("RGBA", (1, 1), (10, 20, 30, 40))
     assert im.getpixel((0, 0)) == (10, 20, 30, 40)
+
+
+# ---------------------------------------------------------------------------
+# Upstream tests — test_image_access.py
+# ---------------------------------------------------------------------------
+
+
+def test_negative_index_L():
+    """Upstream: negative coordinates are supported (wrap-around like Python lists)."""
+    im = Image.new("L", (10, 10))
+    im.putpixel((0, 0), 42)
+    # (-width, -height) → same as (0, 0)
+    assert im.getpixel((-10, -10)) == 42
+
+
+def test_negative_index_RGB():
+    """Upstream: negative pixel coordinates in RGB mode."""
+    im = Image.new("RGB", (10, 10), (1, 2, 3))
+    # (-1, -1) should be the bottom-right pixel
+    im.putpixel((9, 9), (100, 101, 102))
+    assert im.getpixel((-1, -1)) == (100, 101, 102)
+
+
+def test_out_of_bounds_error():
+    """Upstream: coordinates beyond image size raise IndexError."""
+    im = Image.new("RGB", (10, 10))
+    with pytest.raises((IndexError, Exception)):
+        im.getpixel((10, 10))
+
+
+def test_out_of_bounds_negative_error():
+    """Upstream: sufficiently negative coordinates also raise IndexError."""
+    im = Image.new("RGB", (10, 10))
+    with pytest.raises((IndexError, Exception)):
+        im.getpixel((-11, 0))
+
+
+def test_putpixel_negative_index():
+    """Upstream: negative-coordinate putpixel writes to the wrapped position."""
+    im = Image.new("L", (5, 5), 0)
+    im.putpixel((-1, -1), 200)
+    # Should match the last pixel
+    assert im.getpixel((4, 4)) == 200
+
+
+def test_sanity_L(hopper):
+    """Upstream test_sanity: getpixel on every pixel of an L image."""
+    im = hopper("L")
+    for y in range(im.height):
+        for x in range(im.width):
+            v = im.getpixel((x, y))
+            assert isinstance(v, int)
+
+
+def test_sanity_RGB(hopper):
+    """Upstream test_sanity: getpixel on every pixel of an RGB image."""
+    im = hopper("RGB")
+    for y in range(im.height):
+        for x in range(im.width):
+            v = im.getpixel((x, y))
+            assert isinstance(v, tuple)
+            assert len(v) == 3

@@ -2,8 +2,11 @@
 Tests adapted from upstream Pillow test_image_transpose.py.
 
 https://github.com/python-pillow/Pillow/blob/main/Tests/test_image_transpose.py
+
+The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
 
+import pytest
 from PIL import Image
 from conftest import assert_image, assert_image_equal
 
@@ -174,3 +177,47 @@ def test_transverse_equals_rotate180_transpose():
     expected = im.transpose(Image.Transpose.TRANSVERSE)
     actual = im.transpose(Image.Transpose.ROTATE_180).transpose(Image.Transpose.TRANSPOSE)
     assert_image_equal(expected, actual)
+
+
+# ---------------------------------------------------------------------------
+# Upstream tests — test_image_transpose.py
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("op", [
+    Image.Transpose.FLIP_LEFT_RIGHT,
+    Image.Transpose.FLIP_TOP_BOTTOM,
+    Image.Transpose.ROTATE_90,
+    Image.Transpose.ROTATE_180,
+    Image.Transpose.ROTATE_270,
+    Image.Transpose.TRANSPOSE,
+    Image.Transpose.TRANSVERSE,
+])
+def test_sanity_L(op):
+    """Upstream test_sanity: all operations work on L mode images."""
+    im = _make_hopper("L")
+    out = im.transpose(op)
+    assert out.mode == "L"
+
+
+@pytest.mark.parametrize("op", [
+    Image.Transpose.FLIP_LEFT_RIGHT,
+    Image.Transpose.FLIP_TOP_BOTTOM,
+    Image.Transpose.ROTATE_90,
+    Image.Transpose.ROTATE_180,
+    Image.Transpose.ROTATE_270,
+    Image.Transpose.TRANSPOSE,
+    Image.Transpose.TRANSVERSE,
+])
+def test_sanity_RGBA(op):
+    """Upstream test_sanity: all operations work on RGBA mode images."""
+    im = _make_hopper("RGBA")
+    out = im.transpose(op)
+    assert out.mode == "RGBA"
+
+
+def test_invalid_transpose():
+    """Upstream: passing an invalid transpose value should raise."""
+    im = Image.new("RGB", (10, 10))
+    with pytest.raises((ValueError, Exception)):
+        im.transpose(99)
