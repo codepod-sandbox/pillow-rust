@@ -88,6 +88,9 @@ test_files = [
     "test_image_histogram_upstream",
     "test_imagecolor_upstream",
     "test_imagechops_upstream",
+    "test_imagestat_upstream",
+    "test_image_tobytes_upstream",
+    "test_image_putdata_upstream",
 ]
 
 total_pass = 0
