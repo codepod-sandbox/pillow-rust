@@ -564,6 +564,7 @@ fn apply_kernel3x3_scaled(
         return image::DynamicImage::ImageLuma8(out);
     }
 
+    let is_rgb = matches!(img, image::DynamicImage::ImageRgb8(_));
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     let mut out = image::RgbaImage::new(w, h);
@@ -592,7 +593,16 @@ fn apply_kernel3x3_scaled(
             out.put_pixel(x, y, image::Rgba([r, g, b, a]));
         }
     }
-    image::DynamicImage::ImageRgba8(out)
+    if is_rgb {
+        // Convert back to RGB to preserve mode
+        let rgb = image::RgbImage::from_fn(w, h, |x, y| {
+            let p = out.get_pixel(x, y);
+            image::Rgb([p[0], p[1], p[2]])
+        });
+        image::DynamicImage::ImageRgb8(rgb)
+    } else {
+        image::DynamicImage::ImageRgba8(out)
+    }
 }
 
 fn apply_rank_filter(img: &image::DynamicImage, size: u32, rank: u32) -> image::DynamicImage {

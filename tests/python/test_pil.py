@@ -240,8 +240,15 @@ def test_rotate_90_mode(hopper):
         assert out.mode == mode
 
 def test_rotate_90_size():
+    """rotate 90 without expand preserves original size."""
     im = Image.new("RGB", (100, 50))
     out = im.rotate(90)
+    assert out.size == (100, 50)
+
+def test_rotate_90_size_expand():
+    """rotate 90 with expand swaps dimensions."""
+    im = Image.new("RGB", (100, 50))
+    out = im.rotate(90, expand=True)
     assert out.size == (50, 100)
 
 def test_rotate_180_size():
@@ -250,8 +257,15 @@ def test_rotate_180_size():
     assert out.size == (100, 50)
 
 def test_rotate_270_size():
+    """rotate 270 without expand preserves original size."""
     im = Image.new("RGB", (100, 50))
     out = im.rotate(270)
+    assert out.size == (100, 50)
+
+def test_rotate_270_size_expand():
+    """rotate 270 with expand swaps dimensions."""
+    im = Image.new("RGB", (100, 50))
+    out = im.rotate(270, expand=True)
     assert out.size == (50, 100)
 
 def test_rotate_360(hopper):
@@ -260,10 +274,10 @@ def test_rotate_360(hopper):
     assert_image(out, "RGB", im.size)
 
 def test_rotate_90_pixel():
-    """After 90deg CCW rotation, (x,y) maps to (y, w-1-x)."""
+    """After 90deg CCW rotation with expand, (x,y) maps to (y, w-1-x)."""
     im = Image.new("RGB", (10, 20))
     im.putpixel((0, 0), (255, 0, 0))
-    out = im.rotate(90)
+    out = im.rotate(90, expand=True)
     assert out.size == (20, 10)
     assert out.getpixel((0, 9)) == (255, 0, 0)
 
@@ -276,7 +290,7 @@ def test_rotate_180_pixel():
 def test_rotate_270_pixel():
     im = Image.new("RGB", (10, 20))
     im.putpixel((0, 0), (255, 0, 0))
-    out = im.rotate(270)
+    out = im.rotate(270, expand=True)
     assert out.size == (20, 10)
     assert out.getpixel((19, 0)) == (255, 0, 0)
 
@@ -789,7 +803,7 @@ def test_chain_operations():
     im.save("/tmp/_pil_chain.png")
     im2 = Image.open("/tmp/_pil_chain.png")
     assert im2.mode == "L"
-    assert im2.size == (30, 50)
+    assert im2.size == (50, 30)
 
 def test_draw_then_save():
     im = Image.new("RGB", (50, 50), (255, 255, 255))

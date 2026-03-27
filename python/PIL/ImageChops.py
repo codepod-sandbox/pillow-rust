@@ -105,6 +105,18 @@ def logical_xor(image1, image2):
     return _binop(image1, image2, lambda a, b: 255 if bool(a) != bool(b) else 0)
 
 
+def blend(im1, im2, alpha):
+    """Blend two images using alpha: out = im1 * (1-alpha) + im2 * alpha."""
+    return _binop(im1, im2, lambda a, b: int(a * (1.0 - alpha) + b * alpha))
+
+
+def composite(image1, image2, mask):
+    """Create composite image using mask as transparency."""
+    image = image1.copy()
+    image.paste(image2, None, mask)
+    return image
+
+
 def constant(image, value):
     """Return L-mode image filled with a constant *value*, same size as input."""
     return ImageModule.new("L", image.size, value)

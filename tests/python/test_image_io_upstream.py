@@ -141,4 +141,4 @@ def test_chain_operations():
     im.save("/tmp/_pil_upstream_chain.png")
     im2 = Image.open("/tmp/_pil_upstream_chain.png")
     assert im2.mode == "L"
-    assert im2.size == (30, 50)
+    assert im2.size == (50, 30)

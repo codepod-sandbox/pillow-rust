@@ -253,11 +253,16 @@ class Image:
                 return
             fill_im = new(self.mode, (bw, bh), color)
             x, y = fill_box[0], fill_box[1]
-            if mask is not None:
-                mask_handle = mask._handle if hasattr(mask, '_handle') else None
-                if mask_handle is not None:
-                    _pil_native.image_paste(self._handle, fill_im._handle, x, y, mask_handle)
-                    return
+            if mask is not None and hasattr(mask, '_handle'):
+                if mask.mode == "RGBA":
+                    mask_bands = mask.split()
+                    actual_mask = mask_bands[3]
+                elif mask.mode == "RGB":
+                    actual_mask = mask.convert("L")
+                else:
+                    actual_mask = mask
+                _pil_native.image_paste(self._handle, fill_im._handle, x, y, actual_mask._handle)
+                return
             _pil_native.image_paste(self._handle, fill_im._handle, x, y)
             return
 
@@ -268,9 +273,17 @@ class Image:
         else:
             x, y = box[0], box[1]
         src_handle = im._handle if hasattr(im, '_handle') else im
-        mask_handle = mask._handle if mask is not None and hasattr(mask, '_handle') else None
-        if mask_handle is not None:
-            _pil_native.image_paste(self._handle, src_handle, x, y, mask_handle)
+        if mask is not None and hasattr(mask, '_handle'):
+            # If mask is RGBA, use its alpha channel as the mask
+            if mask.mode == "RGBA":
+                mask_bands = mask.split()
+                actual_mask = mask_bands[3]  # alpha channel
+            elif mask.mode == "RGB":
+                # Convert to L by averaging or use first channel
+                actual_mask = mask.convert("L")
+            else:
+                actual_mask = mask
+            _pil_native.image_paste(self._handle, src_handle, x, y, actual_mask._handle)
         else:
             _pil_native.image_paste(self._handle, src_handle, x, y)
 
@@ -390,8 +403,16 @@ class Image:
         If *fillcolor* is given, areas outside the rotation are filled with
         that color instead of black/transparent.
         """
+        orig_w, orig_h = self.size
         if fillcolor is None:
-            return Image(_pil_native.image_rotate(self._handle, float(angle), expand))
+            rotated = Image(_pil_native.image_rotate(self._handle, float(angle), expand))
+            if not expand and rotated.size != (orig_w, orig_h):
+                # Crop center to original size
+                rw, rh = rotated.size
+                x0 = (rw - orig_w) // 2
+                y0 = (rh - orig_h) // 2
+                rotated = rotated.crop((x0, y0, x0 + orig_w, y0 + orig_h))
+            return rotated
 
         orig_mode = self.mode
         # Rotate in RGBA so empty areas become transparent (0,0,0,0)
@@ -404,6 +425,13 @@ class Image:
             finally:
                 _pil_native.image_close(rgba_handle)
             rotated = Image(rot_handle)
+
+        # Crop back to original size if expand=False
+        if not expand and rotated.size != (orig_w, orig_h):
+            rw, rh = rotated.size
+            x0 = (rw - orig_w) // 2
+            y0 = (rh - orig_h) // 2
+            rotated = rotated.crop((x0, y0, x0 + orig_w, y0 + orig_h))
 
         # Resolve fillcolor to a 4-element list [R, G, B, A]
         fc = _resolve_color(fillcolor, "RGBA")
@@ -719,16 +747,31 @@ class Image:
 
     def putalpha(self, alpha):
         """Set the alpha channel from an 'L' image or int value."""
-        if self.mode != "RGBA":
-            new_handle = _pil_native.image_convert(self._handle, "RGBA")
+        # Determine target mode based on current mode
+        if self.mode == "L":
+            target_mode = "LA"
+        elif self.mode == "LA":
+            target_mode = "LA"
+        elif self.mode == "RGB":
+            target_mode = "RGBA"
+        else:
+            target_mode = "RGBA"
+
+        if self.mode != target_mode:
+            new_handle = _pil_native.image_convert(self._handle, target_mode)
             _pil_native.image_close(self._handle)
             self._handle = new_handle
+
         w, h = self.size
+        is_grayscale = target_mode == "LA"
         if isinstance(alpha, int):
             for y in range(h):
                 for x in range(w):
                     px = self.getpixel((x, y))
-                    self.putpixel((x, y), (px[0], px[1], px[2], alpha))
+                    if is_grayscale:
+                        self.putpixel((x, y), (px[0], alpha))
+                    else:
+                        self.putpixel((x, y), (px[0], px[1], px[2], alpha))
         elif isinstance(alpha, Image):
             for y in range(h):
                 for x in range(w):
@@ -736,7 +779,10 @@ class Image:
                     a = alpha.getpixel((x, y))
                     if isinstance(a, tuple):
                         a = a[0]
-                    self.putpixel((x, y), (px[0], px[1], px[2], a))
+                    if is_grayscale:
+                        self.putpixel((x, y), (px[0], a))
+                    else:
+                        self.putpixel((x, y), (px[0], px[1], px[2], a))
 
     # -- dunder helpers -----------------------------------------------------
 
