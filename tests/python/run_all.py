@@ -94,6 +94,8 @@ test_files = [
     "test_image_point_upstream2",
     "test_image_putalpha_upstream2",
     "test_image_access_upstream2",
+    "test_imageenhance_upstream2",
+    "test_imageops_upstream2",
 ]
 
 total_pass = 0
