@@ -82,6 +82,12 @@ test_files = [
     "test_image_convert2",
     "test_imageenhance_exact",
     "test_imagefilter_exact",
+    "test_image_split_upstream",
+    "test_image_getbbox_upstream",
+    "test_image_getextrema_upstream",
+    "test_image_histogram_upstream",
+    "test_imagecolor_upstream",
+    "test_imagechops_upstream",
 ]
 
 total_pass = 0
