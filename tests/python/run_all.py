@@ -2,6 +2,7 @@
 import sys
 import os
 import importlib
+import importlib.util
 import traceback
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -96,6 +97,11 @@ test_files = [
     "test_image_access_upstream2",
     "test_imageenhance_upstream2",
     "test_imageops_upstream2",
+    "test_image_crop_upstream",
+    "test_image_transpose_upstream",
+    "test_image_rotate_upstream",
+    "test_image_convert_upstream",
+    "test_image_filter_upstream",
 ]
 
 total_pass = 0
@@ -159,8 +165,9 @@ if os.path.isdir(compat_dir):
         compat_runner_path = os.path.join(compat_dir, 'run_compat.py')
         if os.path.exists(compat_runner_path):
             spec = importlib.util.spec_from_file_location("run_compat", compat_runner_path)
+            assert spec is not None and spec.loader is not None
             compat_mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(compat_mod)
+            spec.loader.exec_module(compat_mod)  # type: ignore[union-attr]
 
             import io
             buf = io.StringIO()

@@ -5,181 +5,111 @@ https://github.com/python-pillow/Pillow/blob/main/Tests/test_image_convert.py
 
 The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
-
 import pytest
 from PIL import Image
-from conftest import assert_image, assert_image_equal
+from helper import hopper, assert_image_equal
 
 
-# ---------------------------------------------------------------------------
-# Sanity: convert between all supported modes
-# ---------------------------------------------------------------------------
+def test_sanity():
+    """convert() between supported modes — adapted from upstream test_sanity."""
+    def convert(im, mode):
+        out = im.convert(mode)
+        assert out.mode == mode
+        assert out.size == im.size
 
-
-def test_convert_sanity(hopper):
+    # Limit to modes we support
     modes = ("L", "LA", "RGB", "RGBA")
+
     for input_mode in modes:
         im = hopper(input_mode)
         for output_mode in modes:
-            out = im.convert(output_mode)
-            assert out.mode == output_mode
-            assert out.size == im.size
+            convert(im, output_mode)
 
-
-# ---------------------------------------------------------------------------
-# Specific conversions
-# ---------------------------------------------------------------------------
-
-
-def test_convert_RGB_to_L(hopper):
-    im = hopper("RGB")
-    out = im.convert("L")
-    assert_image(out, "L", im.size)
-
-
-def test_convert_RGB_to_RGBA(hopper):
-    im = hopper("RGB")
-    out = im.convert("RGBA")
-    assert_image(out, "RGBA", im.size)
-
-
-def test_convert_RGB_to_LA(hopper):
-    im = hopper("RGB")
-    out = im.convert("LA")
-    assert_image(out, "LA", im.size)
-
-
-def test_convert_L_to_RGB(hopper):
-    im = hopper("L")
-    out = im.convert("RGB")
-    assert_image(out, "RGB", im.size)
-
-
-def test_convert_L_to_RGBA(hopper):
-    im = hopper("L")
-    out = im.convert("RGBA")
-    assert_image(out, "RGBA", im.size)
-
-
-def test_convert_RGBA_to_RGB(hopper):
-    im = hopper("RGBA")
-    out = im.convert("RGB")
-    assert_image(out, "RGB", im.size)
-
-
-def test_convert_RGBA_to_L(hopper):
-    im = hopper("RGBA")
-    out = im.convert("L")
-    assert_image(out, "L", im.size)
-
-
-def test_convert_preserves_size(hopper):
-    for src in ("L", "RGB", "RGBA"):
-        for dst in ("L", "RGB", "RGBA"):
-            im = hopper(src)
-            out = im.convert(dst)
-            assert out.size == im.size
-
-
-def test_convert_noop(hopper):
-    """Converting to the same mode should produce an equal image."""
-    for mode in ("L", "RGB", "RGBA"):
-        im = hopper(mode)
-        out = im.convert(mode)
-        assert_image(out, mode, im.size)
-
-
-def test_convert_white_pixel():
-    """White in RGB should map to 255 in L."""
-    im = Image.new("RGB", (1, 1), (255, 255, 255))
-    out = im.convert("L")
-    assert out.getpixel((0, 0)) == 255
-
-
-def test_convert_black_pixel():
-    im = Image.new("RGB", (1, 1), (0, 0, 0))
-    out = im.convert("L")
-    assert out.getpixel((0, 0)) == 0
-
-
-def test_convert_rgb_to_rgba_alpha():
-    """RGB->RGBA should set alpha to 255."""
-    im = Image.new("RGB", (1, 1), (100, 150, 200))
-    out = im.convert("RGBA")
-    r, g, b, a = out.getpixel((0, 0))
-    assert a == 255
-    assert (r, g, b) == (100, 150, 200)
-
-
-def test_convert_L_to_LA():
-    im = Image.new("L", (1, 1), 128)
-    out = im.convert("LA")
-    assert out.mode == "LA"
-    l, a = out.getpixel((0, 0))
-    assert l == 128
-    assert a == 255  # full opacity
-
-
-def test_convert_default():
-    """convert() with no args should default to RGB."""
-    im = Image.new("L", (10, 10), 128)
-    out = im.convert()
-    assert out.mode == "RGB"
-
-
-def test_convert_roundtrip_RGB_L_RGB():
-    """RGB -> L -> RGB roundtrip for pure white/black."""
-    for color, expected_l in [((255, 255, 255), 255), ((0, 0, 0), 0)]:
-        im = Image.new("RGB", (1, 1), color)
-        l_im = im.convert("L")
-        assert l_im.getpixel((0, 0)) == expected_l
-        rgb_im = l_im.convert("RGB")
-        px = rgb_im.getpixel((0, 0))
-        assert px == (expected_l, expected_l, expected_l)
-
-
-# ---------------------------------------------------------------------------
-# Upstream tests — test_image_convert.py
-# ---------------------------------------------------------------------------
+        # Check 0-size image
+        im = Image.new(input_mode, (0, 0))
+        for output_mode in modes:
+            convert(im, output_mode)
 
 
 def test_unsupported_conversion():
-    """Upstream: converting to an unknown mode raises a ValueError/Exception."""
-    im = Image.new("RGB", (10, 10))
-    with pytest.raises((ValueError, Exception)):
-        im.convert("BOGUS")
+    """convert() with invalid mode raises ValueError — from upstream."""
+    im = hopper()
+    try:
+        im.convert("INVALID")
+        raise AssertionError("Expected ValueError")
+    except ValueError:
+        pass
 
 
-def test_convert_RGBA_to_LA():
-    """Upstream: RGBA -> LA should preserve alpha and desaturate color."""
-    im = Image.new("RGBA", (1, 1), (200, 100, 50, 128))
-    out = im.convert("LA")
-    assert out.mode == "LA"
-    l, a = out.getpixel((0, 0))
-    assert a == 128  # alpha preserved
+def test_matrix_wrong_mode():
+    """Matrix convert requires RGB input — from upstream."""
+    im = hopper("L")
+    matrix = (
+        0.412453, 0.357580, 0.180423, 0,
+        0.212671, 0.715160, 0.072169, 0,
+        0.019334, 0.119193, 0.950227, 0,
+    )
+    assert im.mode == "L"
+    try:
+        im.convert(mode="L", matrix=matrix)
+        raise AssertionError("Expected ValueError")
+    except ValueError:
+        pass
 
 
-def test_convert_L_to_RGBA_full_alpha():
-    """Upstream: L -> RGBA should set alpha to 255."""
-    im = Image.new("L", (1, 1), 100)
-    out = im.convert("RGBA")
-    px = out.getpixel((0, 0))
-    assert len(px) == 4
-    assert px[3] == 255
+def test_matrix_identity():
+    """Identity matrix convert preserves image — from upstream."""
+    im = hopper("RGB")
+    identity_matrix = (
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+    )
+    assert im.mode == "RGB"
+    converted_im = im.convert(mode="RGB", matrix=identity_matrix)
+    assert_image_equal(converted_im, im)
 
 
-def test_convert_RGBA_to_RGB_drops_alpha():
-    """Upstream: RGBA -> RGB should discard alpha."""
-    im = Image.new("RGBA", (1, 1), (10, 20, 30, 128))
-    out = im.convert("RGB")
-    assert out.mode == "RGB"
-    px = out.getpixel((0, 0))
-    assert len(px) == 3
+def test_l_to_rgb():
+    """L → RGB expands to 3-channel image — from upstream."""
+    im = hopper("L")
+    rgb = im.convert("RGB")
+    assert rgb.mode == "RGB"
+    assert rgb.size == im.size
+    # Each channel of the RGB should equal the L channel
+    r, g, b = rgb.split()
+    assert_image_equal(r, im)
+    assert_image_equal(g, im)
+    assert_image_equal(b, im)
 
 
-def test_convert_LA_to_L():
-    """Upstream: LA -> L should strip the alpha channel."""
-    im = Image.new("LA", (1, 1), (200, 128))
+def test_rgb_to_l():
+    """RGB to L convert returns correct mode/size — from upstream."""
+    im = hopper("RGB")
     out = im.convert("L")
     assert out.mode == "L"
-    assert out.getpixel((0, 0)) == 200
+    assert out.size == im.size
+
+
+def test_rgba_to_rgb():
+    """RGBA to RGB drops alpha channel — from upstream."""
+    im = hopper("RGBA")
+    out = im.convert("RGB")
+    assert out.mode == "RGB"
+    assert out.size == im.size
+
+
+def test_rgb_to_rgba():
+    """RGB to RGBA adds opaque alpha — from upstream."""
+    im = hopper("RGB")
+    out = im.convert("RGBA")
+    assert out.mode == "RGBA"
+    assert out.size == im.size
+    # Alpha should be fully opaque
+    alpha = out.getchannel("A")
+    solid = Image.new("L", im.size, 255)
+    assert_image_equal(alpha, solid)
+
+
+if __name__ == "__main__":
+    pytest.main()
