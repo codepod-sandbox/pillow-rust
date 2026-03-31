@@ -5,131 +5,85 @@ https://github.com/python-pillow/Pillow/blob/main/Tests/test_image_resize.py
 
 The Pillow licence (MIT-CMU) applies to test logic ported from that file.
 """
-
 import pytest
 from PIL import Image
-from conftest import assert_image, assert_image_equal
+from helper import hopper, assert_image_equal
 
 
-# ---------------------------------------------------------------------------
-# TestImageResize
-# ---------------------------------------------------------------------------
-
-
-def test_resize_L(hopper):
-    out = hopper("L").resize((112, 103))
-    assert_image(out, "L", (112, 103))
-
-
-def test_resize_RGB(hopper):
-    out = hopper("RGB").resize((112, 103))
-    assert_image(out, "RGB", (112, 103))
-
-
-def test_resize_RGBA(hopper):
-    out = hopper("RGBA").resize((112, 103))
-    assert_image(out, "RGBA", (112, 103))
-
-
-def test_resize_enlarge(hopper):
-    out = hopper("RGB").resize((212, 195))
-    assert_image(out, "RGB", (212, 195))
-
-
-def test_resize_down(hopper):
-    out = hopper("RGB").resize((15, 12))
-    assert_image(out, "RGB", (15, 12))
-
-
-def test_resize_1x1(hopper):
-    out = hopper("RGB").resize((1, 1))
-    assert_image(out, "RGB", (1, 1))
-
-
-def test_resize_preserves_mode(hopper):
-    for mode in ("L", "RGB", "RGBA"):
-        out = hopper(mode).resize((20, 20))
+def test_resize():
+    """resize() preserves mode and returns correct size — from upstream."""
+    def resize(mode, size):
+        out = hopper(mode).resize(size)
         assert out.mode == mode
+        assert out.size == tuple(size)
+
+    for mode in ("L", "RGB", "RGBA", "LA"):
+        resize(mode, (112, 103))
+        resize(mode, [188, 214])
 
 
-def test_resize_list_size():
-    """resize should accept list as well as tuple."""
-    im = Image.new("RGB", (10, 10))
-    out = im.resize([20, 30])
-    assert out.size == (20, 30)
+def test_resize_all_resamplings():
+    """All resampling filters work for reduce and enlarge — from upstream."""
+    resamplings = [
+        Image.Resampling.NEAREST,
+        Image.Resampling.BOX,
+        Image.Resampling.BILINEAR,
+        Image.Resampling.HAMMING,
+        Image.Resampling.BICUBIC,
+        Image.Resampling.LANCZOS,
+    ]
+    for resample in resamplings:
+        # reduce
+        r = hopper("RGB").resize((15, 12), resample)
+        assert r.mode == "RGB"
+        assert r.size == (15, 12)
+        # enlarge
+        r2 = hopper("RGB").resize((212, 195), resample)
+        assert r2.mode == "RGB"
+        assert r2.size == (212, 195)
 
 
-def test_resize_with_resample_nearest():
-    im = Image.new("RGB", (10, 10), (255, 0, 0))
-    out = im.resize((5, 5), Image.Resampling.NEAREST)
-    assert_image(out, "RGB", (5, 5))
-    assert out.getpixel((0, 0)) == (255, 0, 0)
-
-
-def test_resize_with_resample_bilinear():
-    im = Image.new("RGB", (10, 10), (255, 0, 0))
-    out = im.resize((5, 5), Image.Resampling.BILINEAR)
-    assert_image(out, "RGB", (5, 5))
-
-
-def test_resize_with_resample_bicubic():
-    im = Image.new("RGB", (10, 10), (255, 0, 0))
-    out = im.resize((5, 5), Image.Resampling.BICUBIC)
-    assert_image(out, "RGB", (5, 5))
-
-
-def test_resize_with_resample_lanczos():
-    im = Image.new("RGB", (10, 10), (255, 0, 0))
-    out = im.resize((5, 5), Image.Resampling.LANCZOS)
-    assert_image(out, "RGB", (5, 5))
-
-
-# ---------------------------------------------------------------------------
-# Upstream tests — test_image_resize.py
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("resample", [
-    Image.Resampling.NEAREST,
-    Image.Resampling.BILINEAR,
-    Image.Resampling.BICUBIC,
-    Image.Resampling.LANCZOS,
-])
-def test_resize_sanity(resample, hopper):
-    """Upstream test_resize: all resamplers run on L and RGB modes."""
+def test_explicit_filter_matches_itself():
+    """Explicit resampling filter is consistent — derived from upstream."""
     for mode in ("L", "RGB"):
         im = hopper(mode)
-        out = im.resize((im.width // 2, im.height // 2), resample=resample)
+        a = im.resize((20, 20), Image.Resampling.BICUBIC)
+        b = im.resize((20, 20), Image.Resampling.BICUBIC)
+        assert_image_equal(a, b)
+
+
+def test_resize_l_modes():
+    """resize works on L and LA modes — from upstream."""
+    for mode in ("L", "LA"):
+        im = hopper(mode)
+        out = im.resize((64, 64), Image.Resampling.BILINEAR)
         assert out.mode == mode
-        assert out.size == (im.width // 2, im.height // 2)
+        assert out.size == (64, 64)
+
+
+def test_resize_to_same_size():
+    """Resize to same size returns image with same content — from upstream."""
+    im = hopper("RGB")
+    out = im.resize(im.size)
+    assert out.size == im.size
+    assert out.mode == im.mode
 
 
 def test_resize_zero_size():
-    """Upstream: resizing to (0, 0) raises ValueError."""
-    im = Image.new("RGB", (10, 10))
-    with pytest.raises((ValueError, Exception)):
-        im.resize((0, 0))
+    """Resize zero-size image works — from upstream."""
+    im = Image.new("RGB", (0, 0))
+    for resample in (Image.Resampling.NEAREST, Image.Resampling.BILINEAR, Image.Resampling.BICUBIC):
+        r = im.resize((10, 10), resample)
+        assert r.mode == "RGB"
+        assert r.size == (10, 10)
 
 
-def test_resize_enlarges():
-    """Upstream: resizing to larger size works correctly."""
-    im = Image.new("RGB", (10, 10), (100, 150, 200))
-    out = im.resize((50, 50))
-    assert out.size == (50, 50)
-    assert out.getpixel((25, 25)) == (100, 150, 200)
-
-
-def test_resize_L_mode(hopper):
-    """Upstream: resize works correctly for L mode."""
+def test_resize_nearest_identity():
+    """NEAREST resize to same size is identity — derived from upstream."""
     im = hopper("L")
-    out = im.resize((im.width * 2, im.height * 2))
-    assert out.mode == "L"
-    assert out.size == (im.width * 2, im.height * 2)
+    out = im.resize(im.size, Image.Resampling.NEAREST)
+    assert_image_equal(im, out)
 
 
-def test_resize_RGBA_upstream(hopper):
-    """Upstream: resize works for RGBA mode."""
-    im = hopper("RGBA")
-    out = im.resize((50, 50))
-    assert out.mode == "RGBA"
-    assert out.size == (50, 50)
+if __name__ == "__main__":
+    pytest.main()

@@ -104,6 +104,7 @@ test_files = [
     "test_image_filter_upstream",
     "test_imagepath_upstream",
     "test_imagedraw_upstream",
+    "test_image_resize_upstream",
 ]
 
 total_pass = 0
