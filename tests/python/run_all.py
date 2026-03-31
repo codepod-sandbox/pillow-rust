@@ -102,6 +102,8 @@ test_files = [
     "test_image_rotate_upstream",
     "test_image_convert_upstream",
     "test_image_filter_upstream",
+    "test_imagepath_upstream",
+    "test_imagedraw_upstream",
 ]
 
 total_pass = 0
