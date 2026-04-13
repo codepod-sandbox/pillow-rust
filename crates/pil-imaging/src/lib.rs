@@ -18,6 +18,154 @@ fn draw(im: Py<imaging_core::ImagingCore>) -> imaging_draw::ImagingDraw {
 }
 
 #[pyfunction]
+fn new(mode: &str, size: (u32, u32)) -> PyResult<imaging_core::ImagingCore> {
+    let handle = pil_rust_core::new_image(mode, size.0, size.1, &[0, 0, 0, 0])
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
+}
+
+#[pyfunction]
+fn fill(
+    mode: &str,
+    size: (u32, u32),
+    color: &Bound<'_, PyAny>,
+) -> PyResult<imaging_core::ImagingCore> {
+    let bytes = extract_color_bytes(color, mode)?;
+    let handle = pil_rust_core::new_image(mode, size.0, size.1, &bytes)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
+}
+
+fn extract_color_bytes(color: &Bound<'_, PyAny>, _mode: &str) -> PyResult<Vec<u8>> {
+    if let Ok(v) = color.extract::<u8>() {
+        return Ok(vec![v, v, v, 255]);
+    }
+    if let Ok(t) = color.extract::<(u8, u8, u8, u8)>() {
+        return Ok(vec![t.0, t.1, t.2, t.3]);
+    }
+    if let Ok(t) = color.extract::<(u8, u8, u8)>() {
+        return Ok(vec![t.0, t.1, t.2, 255]);
+    }
+    if let Ok(t) = color.extract::<(u8, u8)>() {
+        return Ok(vec![t.0, t.0, t.0, t.1]);
+    }
+    if let Ok(v) = color.extract::<i32>() {
+        return Ok(vec![
+            ((v >> 16) & 0xFF) as u8,
+            ((v >> 8) & 0xFF) as u8,
+            (v & 0xFF) as u8,
+            255,
+        ]);
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "cannot extract color",
+    ))
+}
+
+#[pyfunction]
+fn merge(
+    mode: &str,
+    bands: Vec<PyRef<'_, imaging_core::ImagingCore>>,
+) -> PyResult<imaging_core::ImagingCore> {
+    let handles: Vec<&pil_rust_core::ImageHandle> = bands.iter().map(|b| &b.handle).collect();
+    let handle = pil_rust_core::merge(mode, &handles)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
+}
+
+#[pyfunction]
+fn blend(
+    im1: &imaging_core::ImagingCore,
+    im2: &imaging_core::ImagingCore,
+    alpha: f64,
+) -> PyResult<imaging_core::ImagingCore> {
+    let handle = pil_rust_core::blend(&im1.handle, &im2.handle, alpha)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
+}
+
+#[pyfunction]
+#[pyo3(name = "alpha_composite")]
+fn alpha_composite_module(
+    dst: &mut imaging_core::ImagingCore,
+    src: &imaging_core::ImagingCore,
+) -> PyResult<()> {
+    let result = pil_rust_core::alpha_composite(&dst.handle, &src.handle)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    dst.handle = result;
+    Ok(())
+}
+
+#[pyfunction]
+fn linear_gradient(_mode: &str) -> imaging_core::ImagingCore {
+    imaging_core::ImagingCore {
+        handle: pil_rust_core::linear_gradient(),
+    }
+}
+
+#[pyfunction]
+fn radial_gradient(_mode: &str) -> imaging_core::ImagingCore {
+    imaging_core::ImagingCore {
+        handle: pil_rust_core::radial_gradient(),
+    }
+}
+
+#[pyfunction]
+fn open_from_bytes(data: &[u8]) -> PyResult<imaging_core::ImagingCore> {
+    let handle = pil_rust_core::open(data)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
+}
+
+#[pyfunction]
+#[pyo3(signature = (im, format, **_kwargs))]
+fn save_to_bytes<'py>(
+    im: &imaging_core::ImagingCore,
+    format: &str,
+    _kwargs: Option<&Bound<'py, pyo3::types::PyDict>>,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+    let data = pil_rust_core::save(&im.handle, &format.to_ascii_lowercase())
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(pyo3::types::PyBytes::new(py, &data))
+}
+
+#[pyfunction]
+fn path(coords: &Bound<'_, PyAny>) -> PyResult<imaging_path::ImagingPath> {
+    let pts: Vec<(f32, f32)> = if let Ok(flat) = coords.extract::<Vec<f32>>() {
+        flat.chunks(2)
+            .map(|c| (c[0], c.get(1).copied().unwrap_or(0.0)))
+            .collect()
+    } else if let Ok(pairs) = coords.extract::<Vec<(f32, f32)>>() {
+        pairs
+    } else {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "path coords must be flat list or list of pairs",
+        ));
+    };
+    Ok(imaging_path::ImagingPath { coords: pts })
+}
+
+#[pyfunction]
+fn new_block(mode: &str, size: (u32, u32)) -> PyResult<imaging_core::ImagingCore> {
+    new(mode, size)
+}
+
+#[pyfunction]
+fn clear_cache() {}
+
+#[pyfunction]
+fn set_alignment(_n: i32) {}
+
+#[pyfunction]
+fn get_stats() -> (i32, i32) {
+    (0, 0)
+}
+
+#[pyfunction]
+fn reset_stats() {}
+
+#[pyfunction]
 fn getfont(
     _image: Py<imaging_core::ImagingCore>,
     data: &[u8],
@@ -52,6 +200,21 @@ fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(draw, m)?)?;
     m.add_function(wrap_pyfunction!(getfont, m)?)?;
     m.add_function(wrap_pyfunction!(font_load_py, m)?)?;
+    m.add_function(wrap_pyfunction!(new, m)?)?;
+    m.add_function(wrap_pyfunction!(fill, m)?)?;
+    m.add_function(wrap_pyfunction!(merge, m)?)?;
+    m.add_function(wrap_pyfunction!(blend, m)?)?;
+    m.add_function(wrap_pyfunction!(alpha_composite_module, m)?)?;
+    m.add_function(wrap_pyfunction!(linear_gradient, m)?)?;
+    m.add_function(wrap_pyfunction!(radial_gradient, m)?)?;
+    m.add_function(wrap_pyfunction!(open_from_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(save_to_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(path, m)?)?;
+    m.add_function(wrap_pyfunction!(new_block, m)?)?;
+    m.add_function(wrap_pyfunction!(clear_cache, m)?)?;
+    m.add_function(wrap_pyfunction!(set_alignment, m)?)?;
+    m.add_function(wrap_pyfunction!(get_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(reset_stats, m)?)?;
 
     m.add("PILLOW_VERSION", "12.1.1")?;
     m.add("DEFAULT_STRATEGY", 0i32)?;

@@ -3118,3 +3118,35 @@ pub fn chop_overlay(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
         (r * 255.0).clamp(0.0, 255.0) as u8
     })
 }
+
+/// Horizontal linear gradient: L-mode, 256x256, left=0, right=255.
+pub fn linear_gradient() -> ImageHandle {
+    let mut buf = image::GrayImage::new(256, 256);
+    for y in 0..256u32 {
+        for x in 0..256u32 {
+            buf.put_pixel(x, y, image::Luma([x as u8]));
+        }
+    }
+    ImageHandle {
+        inner: image::DynamicImage::ImageLuma8(buf),
+    }
+}
+
+/// Radial gradient: L-mode, 256x256, center=255, edge=0.
+pub fn radial_gradient() -> ImageHandle {
+    let mut buf = image::GrayImage::new(256, 256);
+    let cx = 128.0f32;
+    let cy = 128.0f32;
+    for y in 0..256u32 {
+        for x in 0..256u32 {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let d = (dx * dx + dy * dy).sqrt() / 128.0;
+            let v = (255.0 * (1.0 - d.min(1.0))) as u8;
+            buf.put_pixel(x, y, image::Luma([v]));
+        }
+    }
+    ImageHandle {
+        inner: image::DynamicImage::ImageLuma8(buf),
+    }
+}
