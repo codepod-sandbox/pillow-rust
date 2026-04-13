@@ -109,6 +109,7 @@ test_files = [
     "test_image_getbands_upstream",
     "test_image_transform_upstream",
     "test_imagedraw2_upstream",
+    "test_image_reduce_upstream",
 ]
 
 total_pass = 0

@@ -689,18 +689,41 @@ class Image:
     # -- reduce / downsample ------------------------------------------------
 
     def reduce(self, factor, box=None):
-        """Return a copy reduced by integer *factor*."""
-        if isinstance(factor, int):
+        """Return a copy reduced by integer *factor* (ceiling of dimension / factor)."""
+        import math
+        if isinstance(factor, (list, tuple)):
+            if len(factor) != 2:
+                raise ValueError("factor must be a single int or a 2-tuple")
+            fx, fy = factor
+        elif isinstance(factor, int):
             fx, fy = factor, factor
         else:
-            fx, fy = factor
+            raise TypeError("factor must be an int or a 2-tuple of ints")
+        if fx <= 0 or fy <= 0:
+            raise ValueError("factor must be greater than 0")
+
         if box is not None:
+            if not hasattr(box, "__len__") or len(box) != 4:
+                raise TypeError("box must be a sequence of 4 ints")
+            x0, y0, x1, y1 = box
+            w_img, h_img = self.size
+            if x0 < 0 or y0 < 0:
+                raise ValueError("box coordinates must be non-negative")
+            if x1 > w_img:
+                raise ValueError("box x1 exceeds image width")
+            if y1 > h_img:
+                raise ValueError("box y1 exceeds image height")
+            if x0 >= x1:
+                raise ValueError("box x0 must be less than x1")
+            if y0 >= y1:
+                raise ValueError("box y0 must be less than y1")
             src = self.crop(box)
         else:
             src = self
         w, h = src.size
-        new_w = max(1, w // fx)
-        new_h = max(1, h // fy)
+        # Upstream Pillow uses ceiling division
+        new_w = math.ceil(w / fx)
+        new_h = math.ceil(h / fy)
         return src.resize((new_w, new_h))
 
     # -- stubs for compatibility -------------------------------------------

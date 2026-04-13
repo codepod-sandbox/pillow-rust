@@ -100,3 +100,13 @@ def test_rounding_errors():
 
 if __name__ == "__main__":
     pytest.main()
+
+
+def test_color_too_long():
+    """Overly long color string raises ValueError — from upstream."""
+    color_too_long = "hsl(" + "1" * 40 + "," + "1" * 40 + "%," + "1" * 40 + "%)"
+    try:
+        ImageColor.getrgb(color_too_long)
+        raise AssertionError("Expected ValueError for too-long color string")
+    except ValueError:
+        pass
