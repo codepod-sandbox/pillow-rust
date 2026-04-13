@@ -17,6 +17,31 @@ fn draw(im: Py<imaging_core::ImagingCore>) -> imaging_draw::ImagingDraw {
     imaging_draw::ImagingDraw { im }
 }
 
+#[pyfunction]
+fn getfont(
+    _image: Py<imaging_core::ImagingCore>,
+    data: &[u8],
+    size: Option<f32>,
+    encoding: Option<&str>,
+    layout_engine: Option<i32>,
+) -> PyResult<font::Font> {
+    let _ = encoding;
+    let _ = layout_engine;
+    let px_size = size.unwrap_or(12.0);
+    let handle = pil_rust_core::font_load(data, px_size)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(font::Font {
+        handle,
+        size: px_size,
+    })
+}
+
+#[pyfunction]
+#[pyo3(name = "font")]
+fn font_load_py(image: Py<imaging_core::ImagingCore>, data: &[u8]) -> PyResult<font::Font> {
+    getfont(image, data, None, None, None)
+}
+
 #[pymodule]
 fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ImagingCore>()?;
@@ -25,6 +50,8 @@ fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Font>()?;
     m.add_class::<ImagingPath>()?;
     m.add_function(wrap_pyfunction!(draw, m)?)?;
+    m.add_function(wrap_pyfunction!(getfont, m)?)?;
+    m.add_function(wrap_pyfunction!(font_load_py, m)?)?;
 
     m.add("PILLOW_VERSION", "12.1.1")?;
     m.add("DEFAULT_STRATEGY", 0i32)?;
