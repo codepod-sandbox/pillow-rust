@@ -2570,3 +2570,62 @@ pub fn getcolors(handle: &ImageHandle, maxcolors: usize) -> Option<Vec<(u32, [u8
     result.sort_by(|a, b| b.0.cmp(&a.0));
     Some(result)
 }
+
+// ---------------------------------------------------------------------------
+// reduce / offset_image / expand_image
+// ---------------------------------------------------------------------------
+
+/// Reduce image by integer factor using lanczos downscale.
+pub fn reduce(handle: &ImageHandle, factor_x: u32, factor_y: u32) -> ImageHandle {
+    let (w, h) = (handle.inner.width(), handle.inner.height());
+    let new_w = w.div_ceil(factor_x).max(1);
+    let new_h = h.div_ceil(factor_y).max(1);
+    let resized = handle
+        .inner
+        .resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
+    ImageHandle { inner: resized }
+}
+
+/// Scroll image cyclically by (x, y) pixels.
+pub fn offset_image(handle: &ImageHandle, x: i32, y: i32) -> ImageHandle {
+    let w = handle.inner.width() as i32;
+    let h = handle.inner.height() as i32;
+    if w == 0 || h == 0 {
+        return handle.clone();
+    }
+    let ox = ((x % w) + w) as u32 % w as u32;
+    let oy = ((y % h) + h) as u32 % h as u32;
+    let img = handle.inner.to_rgba8();
+    let mut out = image::RgbaImage::new(w as u32, h as u32);
+    for sy in 0..h as u32 {
+        for sx in 0..w as u32 {
+            let dx = (sx + ox) % w as u32;
+            let dy = (sy + oy) % h as u32;
+            out.put_pixel(dx, dy, *img.get_pixel(sx, sy));
+        }
+    }
+    let di = image::DynamicImage::ImageRgba8(out);
+    let result = match &handle.inner {
+        image::DynamicImage::ImageLuma8(_) => image::DynamicImage::ImageLuma8(di.to_luma8()),
+        image::DynamicImage::ImageLumaA8(_) => {
+            image::DynamicImage::ImageLumaA8(di.to_luma_alpha8())
+        }
+        image::DynamicImage::ImageRgb8(_) => image::DynamicImage::ImageRgb8(di.to_rgb8()),
+        _ => di,
+    };
+    ImageHandle { inner: result }
+}
+
+/// Add a border of (x, y) pixels around the image filled with color.
+pub fn expand_image(handle: &ImageHandle, x: u32, y: u32, color: &[u8]) -> ImageHandle {
+    let (w, h) = (handle.inner.width(), handle.inner.height());
+    let new_w = w + 2 * x;
+    let new_h = h + 2 * y;
+    let m = mode(handle);
+    let bg = new_image(m, new_w, new_h, color).unwrap_or_else(|_| ImageHandle {
+        inner: image::DynamicImage::ImageRgba8(image::RgbaImage::new(new_w, new_h)),
+    });
+    let mut bg = bg;
+    paste(&mut bg, handle, x as i32, y as i32, None);
+    bg
+}
