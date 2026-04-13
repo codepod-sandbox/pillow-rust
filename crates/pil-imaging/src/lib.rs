@@ -158,6 +158,12 @@ fn clear_cache() {}
 fn set_alignment(_n: i32) {}
 
 #[pyfunction]
+fn set_block_size(_n: i32) {}
+
+#[pyfunction]
+fn set_blocks_max(_n: i32) {}
+
+#[pyfunction]
 fn get_stats() -> (i32, i32) {
     (0, 0)
 }
@@ -166,6 +172,7 @@ fn get_stats() -> (i32, i32) {
 fn reset_stats() {}
 
 #[pyfunction]
+#[pyo3(signature = (_image, data, size=None, encoding=None, layout_engine=None))]
 fn getfont(
     _image: Py<imaging_core::ImagingCore>,
     data: &[u8],
@@ -213,6 +220,8 @@ fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(new_block, m)?)?;
     m.add_function(wrap_pyfunction!(clear_cache, m)?)?;
     m.add_function(wrap_pyfunction!(set_alignment, m)?)?;
+    m.add_function(wrap_pyfunction!(set_block_size, m)?)?;
+    m.add_function(wrap_pyfunction!(set_blocks_max, m)?)?;
     m.add_function(wrap_pyfunction!(get_stats, m)?)?;
     m.add_function(wrap_pyfunction!(reset_stats, m)?)?;
 

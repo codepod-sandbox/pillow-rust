@@ -39,10 +39,18 @@ impl ImagingCore {
         }
     }
 
-    fn pixel_access(slf: Py<Self>, readonly: bool) -> crate::pixel_access::PixelAccess {
-        crate::pixel_access::PixelAccess { im: slf, readonly }
+    fn pixel_access(
+        slf: Py<Self>,
+        readonly: &pyo3::Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<crate::pixel_access::PixelAccess> {
+        let ro = readonly.is_truthy()?;
+        Ok(crate::pixel_access::PixelAccess {
+            im: slf,
+            readonly: ro,
+        })
     }
 
+    #[pyo3(signature = (size, filter=None, box_=None, reducing_gap=None))]
     fn resize(
         &self,
         size: (u32, u32),
@@ -62,6 +70,9 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    fn load(&self) {}
+
+    #[pyo3(signature = (box_=None))]
     fn crop(&self, box_: Option<(i32, i32, i32, i32)>) -> PyResult<ImagingCore> {
         let (w, h) = pil_rust_core::size(&self.handle);
         let (x0, y0, x1, y1) = box_.unwrap_or((0, 0, w as i32, h as i32));
@@ -75,6 +86,7 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    #[pyo3(signature = (angle, resample=None, expand=None, center=None, translate=None, fillcolor=None))]
     fn rotate(
         &self,
         angle: f32,
@@ -99,6 +111,7 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    #[pyo3(signature = (factor, box_=None))]
     fn reduce(
         &self,
         factor: &Bound<'_, PyAny>,
@@ -127,6 +140,7 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    #[pyo3(signature = (xoffset, yoffset=None))]
     fn offset(&self, xoffset: i32, yoffset: Option<i32>) -> ImagingCore {
         let yo = yoffset.unwrap_or(xoffset);
         ImagingCore {
@@ -134,6 +148,7 @@ impl ImagingCore {
         }
     }
 
+    #[pyo3(signature = (x, y=None, color=None))]
     fn expand(
         &self,
         x: u32,
@@ -158,6 +173,7 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    #[pyo3(signature = (mode, dither=None))]
     fn convert(&self, mode: &str, dither: Option<i32>) -> PyResult<ImagingCore> {
         let _ = dither;
         let handle = pil_rust_core::convert(&self.handle, mode)
@@ -165,6 +181,7 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    #[pyo3(signature = (mode, dither=None))]
     fn convert2(&self, mode: &str, dither: Option<i32>) -> PyResult<ImagingCore> {
         self.convert(mode, dither)
     }
@@ -198,6 +215,7 @@ impl ImagingCore {
         Ok(())
     }
 
+    #[pyo3(signature = (lut, mode=None))]
     fn point(&self, lut: &Bound<'_, PyAny>, mode: Option<&str>) -> PyResult<ImagingCore> {
         let lut_bytes: Vec<u8> = lut.extract()?;
         let handle = pil_rust_core::point(&self.handle, &lut_bytes)
@@ -210,6 +228,7 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    #[pyo3(signature = (scale=None, offset=None))]
     fn point_transform(&self, scale: Option<f64>, offset: Option<f64>) -> ImagingCore {
         ImagingCore {
             handle: pil_rust_core::point_transform(
@@ -245,6 +264,7 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    #[pyo3(signature = (mask=None, extrema=None))]
     fn histogram(
         &self,
         mask: Option<&ImagingCore>,
@@ -257,7 +277,9 @@ impl ImagingCore {
         }
     }
 
-    fn getbbox(&self) -> Option<(u32, u32, u32, u32)> {
+    #[pyo3(signature = (alpha_only=true))]
+    fn getbbox(&self, alpha_only: bool) -> Option<(u32, u32, u32, u32)> {
+        let _ = alpha_only;
         pil_rust_core::getbbox(&self.handle)
     }
 
@@ -265,6 +287,7 @@ impl ImagingCore {
         pil_rust_core::getextrema(&self.handle)
     }
 
+    #[pyo3(signature = (maxcolors=None))]
     fn getcolors(&self, maxcolors: Option<usize>, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         use pyo3::types::{PyList, PyTuple};
         let max = maxcolors.unwrap_or(256);
@@ -296,11 +319,13 @@ impl ImagingCore {
         pil_rust_core::getprojection(&self.handle)
     }
 
+    #[pyo3(signature = (mask=None, extrema=None))]
     fn entropy(&self, mask: Option<&ImagingCore>, extrema: Option<&Bound<'_, PyAny>>) -> f64 {
         let _ = extrema;
         pil_rust_core::entropy(&self.handle, mask.map(|m| &m.handle))
     }
 
+    #[pyo3(signature = (name, args=None))]
     fn filter(&self, name: &str, args: Option<Vec<f32>>) -> PyResult<ImagingCore> {
         let args = args.unwrap_or_default();
         let handle = pil_rust_core::filter(&self.handle, name, &args)
@@ -314,6 +339,7 @@ impl ImagingCore {
         ImagingCore { handle }
     }
 
+    #[pyo3(signature = (radius, n=None))]
     fn box_blur(&self, radius: f32, n: Option<i32>) -> ImagingCore {
         let _ = n;
         let handle = pil_rust_core::filter(&self.handle, "box_blur", &[radius])
@@ -343,6 +369,7 @@ impl ImagingCore {
         }
     }
 
+    #[pyo3(signature = (im, box_=None, mask=None))]
     fn paste(
         &mut self,
         im: &ImagingCore,
@@ -358,6 +385,7 @@ impl ImagingCore {
         Ok(())
     }
 
+    #[pyo3(signature = (im, dest=None, source=None))]
     fn alpha_composite(
         &mut self,
         im: &ImagingCore,
@@ -384,18 +412,21 @@ impl ImagingCore {
         Ok(())
     }
 
+    #[pyo3(signature = (scale=None, offset=None))]
     fn getdata(&self, scale: Option<f64>, offset: Option<f64>) -> Vec<Vec<u8>> {
         let _ = scale;
         let _ = offset;
         pil_rust_core::getdata(&self.handle)
     }
 
+    #[pyo3(signature = (data, scale=None, offset=None))]
     fn putdata(&mut self, data: &[u8], scale: Option<f64>, offset: Option<f64>) {
         let _ = scale;
         let _ = offset;
         pil_rust_core::putdata(&mut self.handle, data);
     }
 
+    #[pyo3(signature = (colors, method=None, kmeans=None, palette=None))]
     fn quantize(
         &self,
         colors: usize,
@@ -463,6 +494,7 @@ impl ImagingCore {
         ))
     }
 
+    #[pyo3(signature = (data, rawmode=None))]
     fn putpalette(&mut self, data: &Bound<'_, PyAny>, rawmode: Option<&str>) -> PyResult<()> {
         let _ = (data, rawmode);
         Err(pyo3::exceptions::PyValueError::new_err(
@@ -484,6 +516,7 @@ impl ImagingCore {
         ))
     }
 
+    #[pyo3(signature = (size, method, data, filter=None, fill=None, fillcolor=None))]
     fn transform(
         &self,
         size: (u32, u32),
@@ -528,6 +561,7 @@ impl ImagingCore {
         }
     }
 
+    #[pyo3(signature = (im2, scale=None, offset=None))]
     fn chop_add(&self, im2: &ImagingCore, scale: Option<f64>, offset: Option<f64>) -> ImagingCore {
         ImagingCore {
             handle: pil_rust_core::chop_add(
@@ -538,6 +572,7 @@ impl ImagingCore {
             ),
         }
     }
+    #[pyo3(signature = (im2, scale=None, offset=None))]
     fn chop_subtract(
         &self,
         im2: &ImagingCore,
