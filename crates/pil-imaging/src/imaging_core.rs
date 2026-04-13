@@ -158,6 +158,68 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    fn convert(&self, mode: &str, dither: Option<i32>) -> PyResult<ImagingCore> {
+        let _ = dither;
+        let handle = pil_rust_core::convert(&self.handle, mode)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(ImagingCore { handle })
+    }
+
+    fn convert2(&self, mode: &str, dither: Option<i32>) -> PyResult<ImagingCore> {
+        self.convert(mode, dither)
+    }
+
+    fn convert_matrix(&self, mode: &str, matrix: Vec<f32>) -> PyResult<ImagingCore> {
+        let handle = pil_rust_core::convert_matrix(&self.handle, mode, &matrix)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(ImagingCore { handle })
+    }
+
+    fn convert_transparent(&self, mode: &str, color: (u8, u8, u8)) -> PyResult<ImagingCore> {
+        let _ = mode;
+        let mut rgba = pil_rust_core::convert(&self.handle, "RGBA")
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let (w, h) = pil_rust_core::size(&rgba);
+        for y in 0..h {
+            for x in 0..w {
+                let px = pil_rust_core::getpixel(&rgba, x, y);
+                if px[0] == color.0 && px[1] == color.1 && px[2] == color.2 {
+                    pil_rust_core::putpixel(&mut rgba, x, y, [px[0], px[1], px[2], 0]);
+                }
+            }
+        }
+        Ok(ImagingCore { handle: rgba })
+    }
+
+    fn setmode(&mut self, mode: &str) -> PyResult<()> {
+        let handle = pil_rust_core::convert(&self.handle, mode)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        self.handle = handle;
+        Ok(())
+    }
+
+    fn point(&self, lut: &Bound<'_, PyAny>, mode: Option<&str>) -> PyResult<ImagingCore> {
+        let lut_bytes: Vec<u8> = lut.extract()?;
+        let handle = pil_rust_core::point(&self.handle, &lut_bytes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        if let Some(m) = mode {
+            let h2 = pil_rust_core::convert(&handle, m)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            return Ok(ImagingCore { handle: h2 });
+        }
+        Ok(ImagingCore { handle })
+    }
+
+    fn point_transform(&self, scale: Option<f64>, offset: Option<f64>) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::point_transform(
+                &self.handle,
+                scale.unwrap_or(1.0),
+                offset.unwrap_or(0.0),
+            ),
+        }
+    }
+
     fn transform(
         &self,
         size: (u32, u32),

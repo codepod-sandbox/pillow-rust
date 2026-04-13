@@ -2629,3 +2629,75 @@ pub fn expand_image(handle: &ImageHandle, x: u32, y: u32, color: &[u8]) -> Image
     paste(&mut bg, handle, x as i32, y as i32, None);
     bg
 }
+
+/// Apply pixel = pixel * scale + offset (per-channel) clamped to [0,255].
+pub fn point_transform(handle: &ImageHandle, scale: f64, offset: f64) -> ImageHandle {
+    let img = handle.inner.to_rgba8();
+    let bands = match mode(handle) {
+        "L" | "P" => 1usize,
+        "LA" => 2,
+        "RGB" => 3,
+        _ => 4,
+    };
+    let mut out = img.clone();
+    for pixel in out.pixels_mut() {
+        for i in 0..bands {
+            let v = pixel[i] as f64 * scale + offset;
+            pixel[i] = v.clamp(0.0, 255.0) as u8;
+        }
+    }
+    // Convert back to original color space
+    let di = image::DynamicImage::ImageRgba8(out);
+    let result = match &handle.inner {
+        image::DynamicImage::ImageLuma8(_) => image::DynamicImage::ImageLuma8(di.to_luma8()),
+        image::DynamicImage::ImageLumaA8(_) => {
+            image::DynamicImage::ImageLumaA8(di.to_luma_alpha8())
+        }
+        image::DynamicImage::ImageRgb8(_) => image::DynamicImage::ImageRgb8(di.to_rgb8()),
+        _ => di,
+    };
+    ImageHandle { inner: result }
+}
+
+/// Apply a 3x4 color matrix transform.
+/// matrix is [r_out_coeffs (4), g_out_coeffs (4), b_out_coeffs (4)] = 12 floats for RGB output
+pub fn convert_matrix(
+    handle: &ImageHandle,
+    target_mode: &str,
+    matrix: &[f32],
+) -> Result<ImageHandle> {
+    if matrix.len() < 12 {
+        return Err(PilError::InvalidOperation(
+            "matrix must have at least 12 elements".into(),
+        ));
+    }
+    let img = handle.inner.to_rgba8();
+    let mut out_rgba = image::RgbaImage::new(img.width(), img.height());
+    for (x, y, px) in img.enumerate_pixels() {
+        let r = px[0] as f32;
+        let g = px[1] as f32;
+        let b = px[2] as f32;
+        let a = px[3] as f32;
+        let nr = r * matrix[0] + g * matrix[1] + b * matrix[2] + matrix[3];
+        let ng = r * matrix[4] + g * matrix[5] + b * matrix[6] + matrix[7];
+        let nb = r * matrix[8] + g * matrix[9] + b * matrix[10] + matrix[11];
+        out_rgba.put_pixel(
+            x,
+            y,
+            image::Rgba([
+                nr.clamp(0.0, 255.0) as u8,
+                ng.clamp(0.0, 255.0) as u8,
+                nb.clamp(0.0, 255.0) as u8,
+                a.clamp(0.0, 255.0) as u8,
+            ]),
+        );
+    }
+    let di = image::DynamicImage::ImageRgba8(out_rgba);
+    let result = match target_mode {
+        "L" => image::DynamicImage::ImageLuma8(di.to_luma8()),
+        "LA" => image::DynamicImage::ImageLumaA8(di.to_luma_alpha8()),
+        "RGB" => image::DynamicImage::ImageRgb8(di.to_rgb8()),
+        _ => di,
+    };
+    Ok(ImageHandle { inner: result })
+}
