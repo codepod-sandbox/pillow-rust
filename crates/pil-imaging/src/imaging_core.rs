@@ -38,4 +38,8 @@ impl ImagingCore {
             handle: self.handle.clone(),
         }
     }
+
+    fn pixel_access(slf: Py<Self>, readonly: bool) -> crate::pixel_access::PixelAccess {
+        crate::pixel_access::PixelAccess { im: slf, readonly }
+    }
 }
