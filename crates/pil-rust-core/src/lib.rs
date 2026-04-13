@@ -2918,3 +2918,203 @@ pub fn effect_spread(handle: &ImageHandle, distance: u32) -> ImageHandle {
     };
     ImageHandle { inner: result }
 }
+
+// ---------------------------------------------------------------------------
+// ImageChops operations
+// ---------------------------------------------------------------------------
+
+fn chop_per_pixel<F>(im1: &ImageHandle, im2: &ImageHandle, f: F) -> ImageHandle
+where
+    F: Fn(u8, u8) -> u8,
+{
+    let a = im1.inner.to_rgba8();
+    let b = im2.inner.to_rgba8();
+    let (w, h) = (a.width().min(b.width()), a.height().min(b.height()));
+    let mut out = image::RgbaImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let pa = a.get_pixel(x, y);
+            let pb = b.get_pixel(x, y);
+            out.put_pixel(
+                x,
+                y,
+                image::Rgba([f(pa[0], pb[0]), f(pa[1], pb[1]), f(pa[2], pb[2]), pa[3]]),
+            );
+        }
+    }
+    let di = image::DynamicImage::ImageRgba8(out);
+    let result = match &im1.inner {
+        image::DynamicImage::ImageLuma8(_) => image::DynamicImage::ImageLuma8(di.to_luma8()),
+        image::DynamicImage::ImageLumaA8(_) => {
+            image::DynamicImage::ImageLumaA8(di.to_luma_alpha8())
+        }
+        image::DynamicImage::ImageRgb8(_) => image::DynamicImage::ImageRgb8(di.to_rgb8()),
+        _ => di,
+    };
+    ImageHandle { inner: result }
+}
+
+pub fn chop_add(im1: &ImageHandle, im2: &ImageHandle, scale: f64, offset: f64) -> ImageHandle {
+    let a = im1.inner.to_rgba8();
+    let b = im2.inner.to_rgba8();
+    let (w, h) = (a.width().min(b.width()), a.height().min(b.height()));
+    let mut out = image::RgbaImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let pa = a.get_pixel(x, y);
+            let pb = b.get_pixel(x, y);
+            let apply = |a: u8, b: u8| -> u8 {
+                ((a as f64 + b as f64) / scale + offset).clamp(0.0, 255.0) as u8
+            };
+            out.put_pixel(
+                x,
+                y,
+                image::Rgba([
+                    apply(pa[0], pb[0]),
+                    apply(pa[1], pb[1]),
+                    apply(pa[2], pb[2]),
+                    pa[3],
+                ]),
+            );
+        }
+    }
+    let di = image::DynamicImage::ImageRgba8(out);
+    let result = match &im1.inner {
+        image::DynamicImage::ImageLuma8(_) => image::DynamicImage::ImageLuma8(di.to_luma8()),
+        image::DynamicImage::ImageLumaA8(_) => {
+            image::DynamicImage::ImageLumaA8(di.to_luma_alpha8())
+        }
+        image::DynamicImage::ImageRgb8(_) => image::DynamicImage::ImageRgb8(di.to_rgb8()),
+        _ => di,
+    };
+    ImageHandle { inner: result }
+}
+
+pub fn chop_subtract(im1: &ImageHandle, im2: &ImageHandle, scale: f64, offset: f64) -> ImageHandle {
+    let a = im1.inner.to_rgba8();
+    let b = im2.inner.to_rgba8();
+    let (w, h) = (a.width().min(b.width()), a.height().min(b.height()));
+    let mut out = image::RgbaImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let pa = a.get_pixel(x, y);
+            let pb = b.get_pixel(x, y);
+            let apply = |a: u8, b: u8| -> u8 {
+                ((a as f64 - b as f64) / scale + offset).clamp(0.0, 255.0) as u8
+            };
+            out.put_pixel(
+                x,
+                y,
+                image::Rgba([
+                    apply(pa[0], pb[0]),
+                    apply(pa[1], pb[1]),
+                    apply(pa[2], pb[2]),
+                    pa[3],
+                ]),
+            );
+        }
+    }
+    let di = image::DynamicImage::ImageRgba8(out);
+    let result = match &im1.inner {
+        image::DynamicImage::ImageLuma8(_) => image::DynamicImage::ImageLuma8(di.to_luma8()),
+        image::DynamicImage::ImageLumaA8(_) => {
+            image::DynamicImage::ImageLumaA8(di.to_luma_alpha8())
+        }
+        image::DynamicImage::ImageRgb8(_) => image::DynamicImage::ImageRgb8(di.to_rgb8()),
+        _ => di,
+    };
+    ImageHandle { inner: result }
+}
+
+pub fn chop_add_modulo(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| a.wrapping_add(b))
+}
+pub fn chop_subtract_modulo(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| a.wrapping_sub(b))
+}
+pub fn chop_multiply(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| ((a as u32 * b as u32 + 127) / 255) as u8)
+}
+pub fn chop_screen(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| {
+        (255 - ((255 - a as u32) * (255 - b as u32) / 255)) as u8
+    })
+}
+pub fn chop_difference(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| a.abs_diff(b))
+}
+pub fn chop_darker(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| a.min(b))
+}
+pub fn chop_lighter(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| a.max(b))
+}
+pub fn chop_invert(im: &ImageHandle) -> ImageHandle {
+    let a = im.inner.to_rgba8();
+    let mut out = a.clone();
+    for px in out.pixels_mut() {
+        px[0] = 255 - px[0];
+        px[1] = 255 - px[1];
+        px[2] = 255 - px[2];
+    }
+    let di = image::DynamicImage::ImageRgba8(out);
+    let result = match &im.inner {
+        image::DynamicImage::ImageLuma8(_) => image::DynamicImage::ImageLuma8(di.to_luma8()),
+        image::DynamicImage::ImageLumaA8(_) => {
+            image::DynamicImage::ImageLumaA8(di.to_luma_alpha8())
+        }
+        image::DynamicImage::ImageRgb8(_) => image::DynamicImage::ImageRgb8(di.to_rgb8()),
+        _ => di,
+    };
+    ImageHandle { inner: result }
+}
+pub fn chop_and(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| a & b)
+}
+pub fn chop_or(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| a | b)
+}
+pub fn chop_xor(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| a ^ b)
+}
+pub fn chop_soft_light(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| {
+        let af = a as f32 / 255.0;
+        let bf = b as f32 / 255.0;
+        let r = if bf <= 0.5 {
+            af - (1.0 - 2.0 * bf) * af * (1.0 - af)
+        } else {
+            let d = if af <= 0.25 {
+                ((16.0 * af - 12.0) * af + 4.0) * af
+            } else {
+                af.sqrt()
+            };
+            af + (2.0 * bf - 1.0) * (d - af)
+        };
+        (r * 255.0).clamp(0.0, 255.0) as u8
+    })
+}
+pub fn chop_hard_light(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| {
+        let af = a as f32 / 255.0;
+        let bf = b as f32 / 255.0;
+        let r = if bf < 0.5 {
+            2.0 * af * bf
+        } else {
+            1.0 - 2.0 * (1.0 - af) * (1.0 - bf)
+        };
+        (r * 255.0).clamp(0.0, 255.0) as u8
+    })
+}
+pub fn chop_overlay(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    chop_per_pixel(im1, im2, |a, b| {
+        let af = a as f32 / 255.0;
+        let bf = b as f32 / 255.0;
+        let r = if af < 0.5 {
+            2.0 * af * bf
+        } else {
+            1.0 - 2.0 * (1.0 - af) * (1.0 - bf)
+        };
+        (r * 255.0).clamp(0.0, 255.0) as u8
+    })
+}

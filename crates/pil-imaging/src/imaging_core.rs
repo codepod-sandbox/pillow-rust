@@ -527,4 +527,100 @@ impl ImagingCore {
             ))),
         }
     }
+
+    fn chop_add(&self, im2: &ImagingCore, scale: Option<f64>, offset: Option<f64>) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_add(
+                &self.handle,
+                &im2.handle,
+                scale.unwrap_or(1.0),
+                offset.unwrap_or(0.0),
+            ),
+        }
+    }
+    fn chop_subtract(
+        &self,
+        im2: &ImagingCore,
+        scale: Option<f64>,
+        offset: Option<f64>,
+    ) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_subtract(
+                &self.handle,
+                &im2.handle,
+                scale.unwrap_or(1.0),
+                offset.unwrap_or(0.0),
+            ),
+        }
+    }
+    fn chop_add_modulo(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_add_modulo(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_subtract_modulo(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_subtract_modulo(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_multiply(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_multiply(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_screen(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_screen(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_difference(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_difference(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_darker(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_darker(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_lighter(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_lighter(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_invert(&self) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_invert(&self.handle),
+        }
+    }
+    fn chop_and(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_and(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_or(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_or(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_xor(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_xor(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_soft_light(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_soft_light(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_hard_light(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_hard_light(&self.handle, &im2.handle),
+        }
+    }
+    fn chop_overlay(&self, im2: &ImagingCore) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::chop_overlay(&self.handle, &im2.handle),
+        }
+    }
 }
