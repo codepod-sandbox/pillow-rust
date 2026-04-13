@@ -12,6 +12,11 @@ use imaging_draw::ImagingDraw;
 use imaging_path::ImagingPath;
 use pixel_access::PixelAccess;
 
+#[pyfunction]
+fn draw(im: Py<imaging_core::ImagingCore>) -> imaging_draw::ImagingDraw {
+    imaging_draw::ImagingDraw { im }
+}
+
 #[pymodule]
 fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ImagingCore>()?;
@@ -19,6 +24,7 @@ fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ImagingDraw>()?;
     m.add_class::<Font>()?;
     m.add_class::<ImagingPath>()?;
+    m.add_function(wrap_pyfunction!(draw, m)?)?;
 
     m.add("PILLOW_VERSION", "12.1.1")?;
     m.add("DEFAULT_STRATEGY", 0i32)?;
