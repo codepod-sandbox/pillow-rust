@@ -1,9 +1,174 @@
-"""
-PIL.ImageColor — color name/string to RGB conversion.
-"""
+#
+# The Python Imaging Library
+# $Id$
+#
+# map CSS3-style colour description strings to RGB
+#
+# History:
+# 2002-10-24 fl   Added support for CSS-style color strings
+# 2002-12-15 fl   Added RGBA support
+# 2004-03-27 fl   Fixed remaining int() problems for Python 1.5.2
+# 2004-07-19 fl   Fixed gray/grey spelling issues
+# 2009-03-05 fl   Fixed rounding error in grayscale calculation
+#
+# Copyright (c) 2002-2004 by Secret Labs AB
+# Copyright (c) 2002-2004 by Fredrik Lundh
+#
+# See the README file for information on usage and redistribution.
+#
+from __future__ import annotations
+
+import re
+from functools import lru_cache
+
+from . import Image
 
 
-colormap = {
+@lru_cache
+def getrgb(color: str) -> tuple[int, int, int] | tuple[int, int, int, int]:
+    """
+     Convert a color string to an RGB or RGBA tuple. If the string cannot be
+     parsed, this function raises a :py:exc:`ValueError` exception.
+
+    .. versionadded:: 1.1.4
+
+    :param color: A color string
+    :return: ``(red, green, blue[, alpha])``
+    """
+    if len(color) > 100:
+        msg = "color specifier is too long"
+        raise ValueError(msg)
+    color = color.lower()
+
+    rgb = colormap.get(color, None)
+    if rgb:
+        if isinstance(rgb, tuple):
+            return rgb
+        rgb_tuple = getrgb(rgb)
+        assert len(rgb_tuple) == 3
+        colormap[color] = rgb_tuple
+        return rgb_tuple
+
+    # check for known string formats
+    if re.match("#[a-f0-9]{3}$", color):
+        return int(color[1] * 2, 16), int(color[2] * 2, 16), int(color[3] * 2, 16)
+
+    if re.match("#[a-f0-9]{4}$", color):
+        return (
+            int(color[1] * 2, 16),
+            int(color[2] * 2, 16),
+            int(color[3] * 2, 16),
+            int(color[4] * 2, 16),
+        )
+
+    if re.match("#[a-f0-9]{6}$", color):
+        return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+    if re.match("#[a-f0-9]{8}$", color):
+        return (
+            int(color[1:3], 16),
+            int(color[3:5], 16),
+            int(color[5:7], 16),
+            int(color[7:9], 16),
+        )
+
+    m = re.match(r"rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$", color)
+    if m:
+        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+    m = re.match(r"rgb\(\s*(\d+)%\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)$", color)
+    if m:
+        return (
+            int((int(m.group(1)) * 255) / 100.0 + 0.5),
+            int((int(m.group(2)) * 255) / 100.0 + 0.5),
+            int((int(m.group(3)) * 255) / 100.0 + 0.5),
+        )
+
+    m = re.match(
+        r"hsl\(\s*(\d+\.?\d*)\s*,\s*(\d+\.?\d*)%\s*,\s*(\d+\.?\d*)%\s*\)$", color
+    )
+    if m:
+        from colorsys import hls_to_rgb
+
+        rgb_floats = hls_to_rgb(
+            float(m.group(1)) / 360.0,
+            float(m.group(3)) / 100.0,
+            float(m.group(2)) / 100.0,
+        )
+        return (
+            int(rgb_floats[0] * 255 + 0.5),
+            int(rgb_floats[1] * 255 + 0.5),
+            int(rgb_floats[2] * 255 + 0.5),
+        )
+
+    m = re.match(
+        r"hs[bv]\(\s*(\d+\.?\d*)\s*,\s*(\d+\.?\d*)%\s*,\s*(\d+\.?\d*)%\s*\)$", color
+    )
+    if m:
+        from colorsys import hsv_to_rgb
+
+        rgb_floats = hsv_to_rgb(
+            float(m.group(1)) / 360.0,
+            float(m.group(2)) / 100.0,
+            float(m.group(3)) / 100.0,
+        )
+        return (
+            int(rgb_floats[0] * 255 + 0.5),
+            int(rgb_floats[1] * 255 + 0.5),
+            int(rgb_floats[2] * 255 + 0.5),
+        )
+
+    m = re.match(r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$", color)
+    if m:
+        return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    msg = f"unknown color specifier: {repr(color)}"
+    raise ValueError(msg)
+
+
+@lru_cache
+def getcolor(color: str, mode: str) -> int | tuple[int, ...]:
+    """
+    Same as :py:func:`~PIL.ImageColor.getrgb` for most modes. However, if
+    ``mode`` is HSV, converts the RGB value to a HSV value, or if ``mode`` is
+    not color or a palette image, converts the RGB value to a grayscale value.
+    If the string cannot be parsed, this function raises a :py:exc:`ValueError`
+    exception.
+
+    .. versionadded:: 1.1.4
+
+    :param color: A color string
+    :param mode: Convert result to this mode
+    :return: ``graylevel, (graylevel, alpha) or (red, green, blue[, alpha])``
+    """
+    # same as getrgb, but converts the result to the given mode
+    rgb, alpha = getrgb(color), 255
+    if len(rgb) == 4:
+        alpha = rgb[3]
+        rgb = rgb[:3]
+
+    if mode == "HSV":
+        from colorsys import rgb_to_hsv
+
+        r, g, b = rgb
+        h, s, v = rgb_to_hsv(r / 255, g / 255, b / 255)
+        return int(h * 255), int(s * 255), int(v * 255)
+    elif Image.getmodebase(mode) == "L":
+        r, g, b = rgb
+        # ITU-R Recommendation 601-2 for nonlinear RGB
+        # scaled to 24 bits to match the convert's implementation.
+        graylevel = (r * 19595 + g * 38470 + b * 7471 + 0x8000) >> 16
+        if mode[-1] == "A":
+            return graylevel, alpha
+        return graylevel
+    elif mode[-1] == "A":
+        return rgb + (alpha,)
+    return rgb
+
+
+colormap: dict[str, str | tuple[int, int, int]] = {
+    # X11 colour table from https://drafts.csswg.org/css-color-4/, with
+    # gray/grey spelling issues fixed.  This is a superset of HTML 4.0
+    # colour names used in CSS 1.
     "aliceblue": "#f0f8ff",
     "antiquewhite": "#faebd7",
     "aqua": "#00ffff",
@@ -153,295 +318,3 @@ colormap = {
     "yellow": "#ffff00",
     "yellowgreen": "#9acd32",
 }
-
-
-def getrgb(color):
-    """Convert a color string to an (R, G, B) or (R, G, B, A) tuple.
-
-    Accepts:
-    - Named colors: "red", "blue", etc.
-    - Hex: "#RGB", "#RRGGBB", "#RRGGBBAA"
-    - rgb()/rgba(): "rgb(255, 0, 0)", "rgba(255, 0, 0, 128)"
-    - hsl(): "hsl(0, 100%, 50%)"
-    - hsv()/hsb(): "hsv(0, 100%, 100%)"
-    """
-    if not isinstance(color, str):
-        raise ValueError("color must be a string")
-
-    original = color
-
-    # Named color — must be exact match (no extra spaces)
-    lower = color.lower()
-    if lower in colormap:
-        return getrgb(colormap[lower])
-
-    # Reject if it doesn't look like a valid format
-    if color != color.strip():
-        raise ValueError("unknown color specifier: %r" % original)
-
-    # Hex
-    if color.startswith("#"):
-        h = color[1:]
-        if len(h) in (3, 4, 6, 8):
-            try:
-                if len(h) == 3:
-                    return (int(h[0] * 2, 16), int(h[1] * 2, 16), int(h[2] * 2, 16))
-                if len(h) == 4:
-                    return (int(h[0] * 2, 16), int(h[1] * 2, 16), int(h[2] * 2, 16), int(h[3] * 2, 16))
-                if len(h) == 6:
-                    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
-                if len(h) == 8:
-                    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), int(h[6:8], 16))
-            except ValueError:
-                pass
-        raise ValueError("unknown color specifier: %r" % original)
-
-    # Lowercase for function matching
-    clower = color.lower()
-
-    # rgb(r, g, b) / RGB(r, g, b) — with percent support
-    if clower.startswith("rgb(") or clower.startswith("rgba("):
-        return _parse_rgb(color, original)
-
-    # hsl(h, s%, l%) / HSL(h, s%, l%)
-    if clower.startswith("hsl("):
-        return _parse_hsl(color, original)
-
-    # hsv(h, s%, v%) / HSV(h, s%, v%) / hsb(h, s%, b%)
-    if clower.startswith("hsv(") or clower.startswith("hsb("):
-        return _parse_hsv(color, original)
-
-    raise ValueError("unknown color specifier: %r" % original)
-
-
-def _parse_inner(color):
-    """Extract the inner part of a function call like 'rgb(1, 2, 3)'."""
-    idx = color.index("(")
-    inner = color[idx + 1:]
-    if not inner.endswith(")"):
-        raise ValueError("missing closing paren")
-    return inner[:-1]
-
-
-def _parse_rgb(color, original):
-    """Parse rgb(...) or rgba(...) color strings."""
-    try:
-        inner = _parse_inner(color)
-    except ValueError:
-        raise ValueError("unknown color specifier: %r" % original)
-
-    parts = [p.strip() for p in inner.split(",")]
-
-    is_rgba = color.lower().startswith("rgba(")
-
-    if is_rgba:
-        if len(parts) != 4:
-            raise ValueError("unknown color specifier: %r" % original)
-    else:
-        if len(parts) != 3:
-            raise ValueError("unknown color specifier: %r" % original)
-
-    # Check if percent format
-    if parts[0].endswith("%"):
-        # All non-alpha parts must be percent
-        for i in range(3):
-            if i >= len(parts):
-                break
-            p = parts[i]
-            if not p.endswith("%"):
-                raise ValueError("unknown color specifier: %r" % original)
-            # Reject space before %: "0 %" is invalid
-            if len(p) > 1 and p[-2] == " ":
-                raise ValueError("unknown color specifier: %r" % original)
-        values = []
-        for i in range(3):
-            p = parts[i].rstrip("%")
-            values.append(int(float(p) * 255 / 100 + 0.5))
-        if is_rgba:
-            if parts[3].endswith("%"):
-                raise ValueError("unknown color specifier: %r" % original)
-            values.append(int(parts[3]))
-        return tuple(values)
-    else:
-        # Integer format
-        try:
-            values = [int(p) for p in parts]
-        except ValueError:
-            raise ValueError("unknown color specifier: %r" % original)
-        return tuple(values)
-
-
-def _parse_hsl(color, original):
-    """Parse hsl(h, s%, l%) color strings."""
-    try:
-        inner = _parse_inner(color)
-    except ValueError:
-        raise ValueError("unknown color specifier: %r" % original)
-
-    parts = [p.strip() for p in inner.split(",")]
-    if len(parts) != 3:
-        raise ValueError("unknown color specifier: %r" % original)
-
-    # h must NOT end with %, s and l MUST end with %
-    if parts[0].endswith("%"):
-        raise ValueError("unknown color specifier: %r" % original)
-    if not parts[1].endswith("%") or not parts[2].endswith("%"):
-        raise ValueError("unknown color specifier: %r" % original)
-
-    # Validate no spaces within percent values
-    for p in parts[1:]:
-        stripped = p.rstrip("%")
-        if stripped != stripped.strip():
-            raise ValueError("unknown color specifier: %r" % original)
-
-    try:
-        h_val = float(parts[0]) / 360.0
-        s_val = float(parts[1].rstrip("%")) / 100.0
-        l_val = float(parts[2].rstrip("%")) / 100.0
-    except (ValueError, OverflowError):
-        raise ValueError("unknown color specifier: %r" % original)
-
-    # Reject absurdly long numbers
-    for p in parts:
-        clean = p.rstrip("%")
-        if len(clean) > 20:
-            raise ValueError("unknown color specifier: %r" % original)
-
-    return _hsl_to_rgb(h_val, s_val, l_val)
-
-
-def _parse_hsv(color, original):
-    """Parse hsv(h, s%, v%) or hsb(h, s%, b%) color strings."""
-    try:
-        inner = _parse_inner(color)
-    except ValueError:
-        raise ValueError("unknown color specifier: %r" % original)
-
-    parts = [p.strip() for p in inner.split(",")]
-    if len(parts) != 3:
-        raise ValueError("unknown color specifier: %r" % original)
-
-    if parts[0].endswith("%"):
-        raise ValueError("unknown color specifier: %r" % original)
-    if not parts[1].endswith("%") or not parts[2].endswith("%"):
-        raise ValueError("unknown color specifier: %r" % original)
-
-    for p in parts[1:]:
-        stripped = p.rstrip("%")
-        if stripped != stripped.strip():
-            raise ValueError("unknown color specifier: %r" % original)
-
-    try:
-        h_val = float(parts[0]) / 360.0
-        s_val = float(parts[1].rstrip("%")) / 100.0
-        v_val = float(parts[2].rstrip("%")) / 100.0
-    except (ValueError, OverflowError):
-        raise ValueError("unknown color specifier: %r" % original)
-
-    for p in parts:
-        clean = p.rstrip("%")
-        if len(clean) > 20:
-            raise ValueError("unknown color specifier: %r" % original)
-
-    return _hsv_to_rgb(h_val, s_val, v_val)
-
-
-def _hsl_to_rgb(h, s, l):
-    """Convert HSL (0-1 range) to (R, G, B) tuple (0-255)."""
-    if s == 0:
-        v = int(l * 255 + 0.5)
-        return (v, v, v)
-
-    if l < 0.5:
-        q = l * (1 + s)
-    else:
-        q = l + s - l * s
-    p = 2 * l - q
-
-    def hue2rgb(p, q, t):
-        if t < 0:
-            t += 1
-        if t > 1:
-            t -= 1
-        if t < 1 / 6:
-            return p + (q - p) * 6 * t
-        if t < 1 / 2:
-            return q
-        if t < 2 / 3:
-            return p + (q - p) * (2 / 3 - t) * 6
-        return p
-
-    r = int(hue2rgb(p, q, h + 1 / 3) * 255 + 0.5)
-    g = int(hue2rgb(p, q, h) * 255 + 0.5)
-    b = int(hue2rgb(p, q, h - 1 / 3) * 255 + 0.5)
-    return (r, g, b)
-
-
-def _hsv_to_rgb(h, s, v):
-    """Convert HSV (0-1 range) to (R, G, B) tuple (0-255)."""
-    if s == 0:
-        val = int(v * 255 + 0.5)
-        return (val, val, val)
-
-    i = int(h * 6.0)
-    f = (h * 6.0) - i
-    p_val = v * (1.0 - s)
-    q_val = v * (1.0 - s * f)
-    t_val = v * (1.0 - s * (1.0 - f))
-
-    i = i % 6
-    if i == 0:
-        r, g, b = v, t_val, p_val
-    elif i == 1:
-        r, g, b = q_val, v, p_val
-    elif i == 2:
-        r, g, b = p_val, v, t_val
-    elif i == 3:
-        r, g, b = p_val, q_val, v
-    elif i == 4:
-        r, g, b = t_val, p_val, v
-    else:
-        r, g, b = v, p_val, q_val
-
-    return (int(r * 255 + 0.5), int(g * 255 + 0.5), int(b * 255 + 0.5))
-
-
-def getcolor(color, mode):
-    """Convert a color string to a value appropriate for the given *mode*.
-
-    Returns an integer for 'L'/'1', a tuple for 'RGB'/'RGBA'/'LA'/'HSV'.
-    """
-    rgb = getrgb(color)
-    if mode == "L" or mode == "1":
-        # BT.601 luma (matches Pillow's fixed-point: r*19595+g*38470+b*7471 >> 16)
-        r, g, b = rgb[0], rgb[1], rgb[2]
-        return (r * 19595 + g * 38470 + b * 7471 + 0x8000) >> 16
-    if mode == "LA":
-        r, g, b = rgb[0], rgb[1], rgb[2]
-        l = (r * 19595 + g * 38470 + b * 7471 + 0x8000) >> 16
-        a = rgb[3] if len(rgb) == 4 else 255
-        return (l, a)
-    if mode == "RGB":
-        return rgb[:3]
-    if mode == "RGBA":
-        if len(rgb) == 4:
-            return rgb
-        return rgb[:3] + (255,)
-    if mode == "HSV":
-        r, g, b = rgb[0], rgb[1], rgb[2]
-        maxc = max(r, g, b)
-        minc = min(r, g, b)
-        v = maxc
-        if maxc == minc:
-            return (0, 0, v)
-        s = int((maxc - minc) / maxc * 255 + 0.5)
-        diff = maxc - minc
-        if maxc == r:
-            h = (g - b) / diff
-        elif maxc == g:
-            h = 2.0 + (b - r) / diff
-        else:
-            h = 4.0 + (r - g) / diff
-        h = int((h / 6.0) * 255 + 0.5) % 256
-        return (h, s, v)
-    return rgb

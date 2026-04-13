@@ -1,187 +1,311 @@
-"""
-PIL.ImageChops — channel operations (arithmetic on images).
-"""
+#
+# The Python Imaging Library.
+# $Id$
+#
+# standard channel operations
+#
+# History:
+# 1996-03-24 fl   Created
+# 1996-08-13 fl   Added logical operations (for "1" images)
+# 2000-10-12 fl   Added offset method (from Image.py)
+#
+# Copyright (c) 1997-2000 by Secret Labs AB
+# Copyright (c) 1996-2000 by Fredrik Lundh
+#
+# See the README file for information on usage and redistribution.
+#
 
-from PIL import Image as ImageModule
-from PIL.Image import Image
+from __future__ import annotations
 
-
-def add(image1, image2, scale=1.0, offset=0):
-    """Add two images: out = (image1 + image2) / scale + offset."""
-    return _binop(image1, image2, lambda a, b: int((a + b) / scale + offset))
-
-
-def add_modulo(image1, image2):
-    """Add two images without clipping: out = (image1 + image2) % 256."""
-    return _binop(image1, image2, lambda a, b: (a + b) % 256)
-
-
-def subtract(image1, image2, scale=1.0, offset=0):
-    """Subtract two images: out = (image1 - image2) / scale + offset."""
-    return _binop(image1, image2, lambda a, b: int((a - b) / scale + offset))
-
-
-def subtract_modulo(image1, image2):
-    """Subtract two images without clipping: out = (image1 - image2) % 256."""
-    return _binop(image1, image2, lambda a, b: (a - b) % 256)
+from . import Image
 
 
-def multiply(image1, image2):
-    """Multiply two images: out = image1 * image2 / 255."""
-    return _binop(image1, image2, lambda a, b: (a * b) // 255)
+def constant(image: Image.Image, value: int) -> Image.Image:
+    """Fill a channel with a given gray level.
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    return Image.new("L", image.size, value)
 
 
-def screen(image1, image2):
-    """Screen blend: out = 255 - ((255 - image1) * (255 - image2) / 255)."""
-    return _binop(image1, image2, lambda a, b: 255 - ((255 - a) * (255 - b) // 255))
+def duplicate(image: Image.Image) -> Image.Image:
+    """Copy a channel. Alias for :py:meth:`PIL.Image.Image.copy`.
 
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
 
-def soft_light(image1, image2):
-    """Soft light blend."""
-    def op(a, b):
-        t = a * b / 255.0
-        return int(t + a * (255 - (255 - a) * (255 - b) / 255.0 - t) / 255.0)
-    return _binop(image1, image2, op)
-
-
-def hard_light(image1, image2):
-    """Hard light blend."""
-    def op(a, b):
-        if b < 128:
-            return (2 * a * b) // 255
-        else:
-            return 255 - (2 * (255 - a) * (255 - b)) // 255
-    return _binop(image1, image2, op)
-
-
-def overlay(image1, image2):
-    """Overlay blend (hard light with swapped inputs)."""
-    return hard_light(image2, image1)
-
-
-def darker(image1, image2):
-    """Select darker pixel: out = min(image1, image2)."""
-    return _binop(image1, image2, lambda a, b: min(a, b))
-
-
-def lighter(image1, image2):
-    """Select lighter pixel: out = max(image1, image2)."""
-    return _binop(image1, image2, lambda a, b: max(a, b))
-
-
-def difference(image1, image2):
-    """Absolute difference: out = abs(image1 - image2)."""
-    return _binop(image1, image2, lambda a, b: abs(a - b))
-
-
-def invert(image):
-    """Invert image: out = 255 - image."""
-    lut = [255 - i for i in range(256)]
-    mode = image.mode
-    if mode == "L":
-        return image.point(lut)
-    elif mode in ("RGB", "RGBA"):
-        channels = image.split()
-        bands = 3
-        out_channels = [channels[i].point(lut) for i in range(bands)]
-        if mode == "RGBA":
-            out_channels.append(channels[3])
-        return ImageModule.merge(mode, out_channels)
-    return image.point(lut)
-
-
-def logical_and(image1, image2):
-    """Logical AND: both nonzero → 255, else 0."""
-    return _binop(image1, image2, lambda a, b: 255 if a and b else 0)
-
-
-def logical_or(image1, image2):
-    """Logical OR: either nonzero → 255, else 0."""
-    return _binop(image1, image2, lambda a, b: 255 if a or b else 0)
-
-
-def logical_xor(image1, image2):
-    """Logical XOR: exactly one nonzero → 255, else 0."""
-    return _binop(image1, image2, lambda a, b: 255 if bool(a) != bool(b) else 0)
-
-
-def blend(im1, im2, alpha):
-    """Blend two images using alpha: out = im1 * (1-alpha) + im2 * alpha."""
-    return _binop(im1, im2, lambda a, b: int(a * (1.0 - alpha) + b * alpha))
-
-
-def composite(image1, image2, mask):
-    """Create composite image using mask as transparency."""
-    image = image1.copy()
-    image.paste(image2, None, mask)
-    return image
-
-
-def constant(image, value):
-    """Return L-mode image filled with a constant *value*, same size as input."""
-    return ImageModule.new("L", image.size, value)
-
-
-def duplicate(image):
-    """Return a copy of the image."""
     return image.copy()
 
 
-def offset(image, xoffset, yoffset=None):
-    """Offset image data. Wraps around edges."""
+def invert(image: Image.Image) -> Image.Image:
+    """
+    Invert an image (channel). ::
+
+        out = MAX - image
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image.load()
+    return image._new(image.im.chop_invert())
+
+
+def lighter(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """
+    Compares the two images, pixel by pixel, and returns a new image containing
+    the lighter values. ::
+
+        out = max(image1, image2)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_lighter(image2.im))
+
+
+def darker(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """
+    Compares the two images, pixel by pixel, and returns a new image containing
+    the darker values. ::
+
+        out = min(image1, image2)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_darker(image2.im))
+
+
+def difference(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """
+    Returns the absolute value of the pixel-by-pixel difference between the two
+    images. ::
+
+        out = abs(image1 - image2)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_difference(image2.im))
+
+
+def multiply(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """
+    Superimposes two images on top of each other.
+
+    If you multiply an image with a solid black image, the result is black. If
+    you multiply with a solid white image, the image is unaffected. ::
+
+        out = image1 * image2 / MAX
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_multiply(image2.im))
+
+
+def screen(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """
+    Superimposes two inverted images on top of each other. ::
+
+        out = MAX - ((MAX - image1) * (MAX - image2) / MAX)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_screen(image2.im))
+
+
+def soft_light(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """
+    Superimposes two images on top of each other using the Soft Light algorithm
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_soft_light(image2.im))
+
+
+def hard_light(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """
+    Superimposes two images on top of each other using the Hard Light algorithm
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_hard_light(image2.im))
+
+
+def overlay(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """
+    Superimposes two images on top of each other using the Overlay algorithm
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_overlay(image2.im))
+
+
+def add(
+    image1: Image.Image, image2: Image.Image, scale: float = 1.0, offset: float = 0
+) -> Image.Image:
+    """
+    Adds two images, dividing the result by scale and adding the
+    offset. If omitted, scale defaults to 1.0, and offset to 0.0. ::
+
+        out = ((image1 + image2) / scale + offset)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_add(image2.im, scale, offset))
+
+
+def subtract(
+    image1: Image.Image, image2: Image.Image, scale: float = 1.0, offset: float = 0
+) -> Image.Image:
+    """
+    Subtracts two images, dividing the result by scale and adding the offset.
+    If omitted, scale defaults to 1.0, and offset to 0.0. ::
+
+        out = ((image1 - image2) / scale + offset)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_subtract(image2.im, scale, offset))
+
+
+def add_modulo(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """Add two images, without clipping the result. ::
+
+        out = ((image1 + image2) % MAX)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_add_modulo(image2.im))
+
+
+def subtract_modulo(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """Subtract two images, without clipping the result. ::
+
+        out = ((image1 - image2) % MAX)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_subtract_modulo(image2.im))
+
+
+def logical_and(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """Logical AND between two images.
+
+    Both of the images must have mode "1". If you would like to perform a
+    logical AND on an image with a mode other than "1", try
+    :py:meth:`~PIL.ImageChops.multiply` instead, using a black-and-white mask
+    as the second image. ::
+
+        out = ((image1 and image2) % MAX)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_and(image2.im))
+
+
+def logical_or(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """Logical OR between two images.
+
+    Both of the images must have mode "1". ::
+
+        out = ((image1 or image2) % MAX)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_or(image2.im))
+
+
+def logical_xor(image1: Image.Image, image2: Image.Image) -> Image.Image:
+    """Logical XOR between two images.
+
+    Both of the images must have mode "1". ::
+
+        out = ((bool(image1) != bool(image2)) % MAX)
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    image1.load()
+    image2.load()
+    return image1._new(image1.im.chop_xor(image2.im))
+
+
+def blend(image1: Image.Image, image2: Image.Image, alpha: float) -> Image.Image:
+    """Blend images using constant transparency weight. Alias for
+    :py:func:`PIL.Image.blend`.
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    return Image.blend(image1, image2, alpha)
+
+
+def composite(
+    image1: Image.Image, image2: Image.Image, mask: Image.Image
+) -> Image.Image:
+    """Create composite using transparency mask. Alias for
+    :py:func:`PIL.Image.composite`.
+
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
+    return Image.composite(image1, image2, mask)
+
+
+def offset(image: Image.Image, xoffset: int, yoffset: int | None = None) -> Image.Image:
+    """Returns a copy of the image where data has been offset by the given
+    distances. Data wraps around the edges. If ``yoffset`` is omitted, it
+    is assumed to be equal to ``xoffset``.
+
+    :param image: Input image.
+    :param xoffset: The horizontal distance.
+    :param yoffset: The vertical distance.  If omitted, both
+        distances are set to the same value.
+    :rtype: :py:class:`~PIL.Image.Image`
+    """
+
     if yoffset is None:
         yoffset = xoffset
-    w, h = image.size
-    xoffset = xoffset % w
-    yoffset = yoffset % h
-    # Crop four quadrants and reassemble
-    parts = [
-        (image.crop((w - xoffset, h - yoffset, w, h)), (0, 0)),
-        (image.crop((0, h - yoffset, w - xoffset, h)), (xoffset, 0)),
-        (image.crop((w - xoffset, 0, w, h - yoffset)), (0, yoffset)),
-        (image.crop((0, 0, w - xoffset, h - yoffset)), (xoffset, yoffset)),
-    ]
-    out = ImageModule.new(image.mode, image.size)
-    for piece, pos in parts:
-        out.paste(piece, pos)
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Internal helper
-# ---------------------------------------------------------------------------
-
-def _binop(im1, im2, func):
-    """Apply a per-channel binary operation to two images."""
-    mode = im1.mode
-    w, h = im1.size
-
-    if mode == "L":
-        d1 = im1.getdata()
-        d2 = im2.getdata()
-        out_data = [max(0, min(255, func(a, b))) for a, b in zip(d1, d2)]
-        out = ImageModule.new("L", (w, h))
-        out.putdata(out_data)
-        return out
-
-    # RGB or RGBA
-    channels1 = im1.split()
-    channels2 = im2.split()
-    bands = min(len(channels1), len(channels2))
-    # Only operate on colour channels (not alpha)
-    color_bands = 3 if bands >= 3 else bands
-
-    out_channels = []
-    for i in range(color_bands):
-        d1 = channels1[i].getdata()
-        d2 = channels2[i].getdata()
-        out_data = [max(0, min(255, func(a, b))) for a, b in zip(d1, d2)]
-        ch = ImageModule.new("L", (w, h))
-        ch.putdata(out_data)
-        out_channels.append(ch)
-
-    # Preserve alpha from first image
-    if mode == "RGBA" and len(channels1) >= 4:
-        out_channels.append(channels1[3])
-
-    return ImageModule.merge(mode, out_channels)
+    image.load()
+    return image._new(image.im.offset(xoffset, yoffset))
