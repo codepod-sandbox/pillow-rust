@@ -1,0 +1,12 @@
+[package]
+name = "pil-imaging"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "_imaging"
+crate-type = ["cdylib"]
+
+[dependencies]
+pil-rust-core = { path = "../pil-rust-core" }
+pyo3 = { version = "0.28", features = ["extension-module"] }
