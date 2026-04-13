@@ -301,6 +301,48 @@ impl ImagingCore {
         pil_rust_core::entropy(&self.handle, mask.map(|m| &m.handle))
     }
 
+    fn filter(&self, name: &str, args: Option<Vec<f32>>) -> PyResult<ImagingCore> {
+        let args = args.unwrap_or_default();
+        let handle = pil_rust_core::filter(&self.handle, name, &args)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(ImagingCore { handle })
+    }
+
+    fn gaussian_blur(&self, radius: f32) -> ImagingCore {
+        let handle = pil_rust_core::filter(&self.handle, "gaussian_blur", &[radius])
+            .unwrap_or_else(|_| self.handle.clone());
+        ImagingCore { handle }
+    }
+
+    fn box_blur(&self, radius: f32, n: Option<i32>) -> ImagingCore {
+        let _ = n;
+        let handle = pil_rust_core::filter(&self.handle, "box_blur", &[radius])
+            .unwrap_or_else(|_| self.handle.clone());
+        ImagingCore { handle }
+    }
+
+    fn unsharp_mask(&self, radius: f32, percent: i32, threshold: i32) -> ImagingCore {
+        let handle = pil_rust_core::filter(
+            &self.handle,
+            "unsharp_mask",
+            &[radius, percent as f32, threshold as f32],
+        )
+        .unwrap_or_else(|_| self.handle.clone());
+        ImagingCore { handle }
+    }
+
+    fn rankfilter(&self, size: u32, rank: u32) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::rankfilter(&self.handle, size, rank),
+        }
+    }
+
+    fn modefilter(&self, size: u32) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::modefilter(&self.handle, size),
+        }
+    }
+
     fn transform(
         &self,
         size: (u32, u32),

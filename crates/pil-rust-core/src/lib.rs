@@ -2803,3 +2803,77 @@ pub fn entropy(handle: &ImageHandle, mask: Option<&ImageHandle>) -> f64 {
     }
     e
 }
+
+/// Rank filter: sort pixels in a (size x size) window, return rank-th smallest.
+/// Works on L-mode images; RGB images are converted to L first.
+pub fn rankfilter(handle: &ImageHandle, size: u32, rank: u32) -> ImageHandle {
+    let img = handle.inner.to_luma8();
+    let (w, h) = (img.width(), img.height());
+    let half = (size / 2) as i32;
+    let mut out = image::GrayImage::new(w, h);
+    for y in 0..h as i32 {
+        for x in 0..w as i32 {
+            let mut vals: Vec<u8> = Vec::with_capacity((size * size) as usize);
+            for dy in -half..=half {
+                for dx in -half..=half {
+                    let px = (x + dx).clamp(0, w as i32 - 1) as u32;
+                    let py = (y + dy).clamp(0, h as i32 - 1) as u32;
+                    vals.push(img.get_pixel(px, py)[0]);
+                }
+            }
+            vals.sort_unstable();
+            let idx = (rank as usize).min(vals.len().saturating_sub(1));
+            out.put_pixel(x as u32, y as u32, image::Luma([vals[idx]]));
+        }
+    }
+    // Preserve original mode for L images, otherwise return L
+    let di = image::DynamicImage::ImageLuma8(out);
+    match &handle.inner {
+        image::DynamicImage::ImageLuma8(_) => ImageHandle { inner: di },
+        _ => {
+            // For non-L images, convert back to original mode
+            let rgba = di.to_rgba8();
+            let result = match crate::mode(handle) {
+                "RGB" => {
+                    image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(rgba).to_rgb8())
+                }
+                "RGBA" => image::DynamicImage::ImageRgba8(rgba),
+                "LA" => image::DynamicImage::ImageLumaA8(
+                    image::DynamicImage::ImageRgba8(rgba).to_luma_alpha8(),
+                ),
+                _ => di,
+            };
+            ImageHandle { inner: result }
+        }
+    }
+}
+
+/// Mode filter: return most common pixel in a (size x size) window.
+pub fn modefilter(handle: &ImageHandle, size: u32) -> ImageHandle {
+    let img = handle.inner.to_luma8();
+    let (w, h) = (img.width(), img.height());
+    let half = (size / 2) as i32;
+    let mut out = image::GrayImage::new(w, h);
+    for y in 0..h as i32 {
+        for x in 0..w as i32 {
+            let mut counts = [0u32; 256];
+            for dy in -half..=half {
+                for dx in -half..=half {
+                    let px = (x + dx).clamp(0, w as i32 - 1) as u32;
+                    let py = (y + dy).clamp(0, h as i32 - 1) as u32;
+                    counts[img.get_pixel(px, py)[0] as usize] += 1;
+                }
+            }
+            let mode_val = counts
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, &c)| c)
+                .map(|(i, _)| i)
+                .unwrap_or(0) as u8;
+            out.put_pixel(x as u32, y as u32, image::Luma([mode_val]));
+        }
+    }
+    ImageHandle {
+        inner: image::DynamicImage::ImageLuma8(out),
+    }
+}
