@@ -157,4 +157,48 @@ impl ImagingCore {
         let handle = pil_rust_core::expand_image(&self.handle, x, y, &color_bytes);
         Ok(ImagingCore { handle })
     }
+
+    fn transform(
+        &self,
+        size: (u32, u32),
+        method: i32,
+        data: &Bound<'_, PyAny>,
+        filter: Option<i32>,
+        fill: Option<i32>,
+        fillcolor: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<ImagingCore> {
+        let _ = filter;
+        let _ = fill;
+        let _ = fillcolor;
+        match method {
+            0 => {
+                // AFFINE: data is 6-element sequence
+                let d: Vec<f64> = data.extract()?;
+                if d.len() < 6 {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "affine needs 6 coefficients",
+                    ));
+                }
+                let coeffs: [f64; 6] = [d[0], d[1], d[2], d[3], d[4], d[5]];
+                let handle = pil_rust_core::transform_affine(&self.handle, size.0, size.1, &coeffs);
+                Ok(ImagingCore { handle })
+            }
+            2 => {
+                // PERSPECTIVE: data is 8-element sequence
+                let d: Vec<f64> = data.extract()?;
+                if d.len() < 8 {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "perspective needs 8 coefficients",
+                    ));
+                }
+                let coeffs: [f64; 8] = [d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]];
+                let handle =
+                    pil_rust_core::transform_perspective(&self.handle, size.0, size.1, &coeffs);
+                Ok(ImagingCore { handle })
+            }
+            _ => Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+                "transform method {method} not implemented"
+            ))),
+        }
+    }
 }
