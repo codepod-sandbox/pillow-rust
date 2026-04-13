@@ -2877,3 +2877,44 @@ pub fn modefilter(handle: &ImageHandle, size: u32) -> ImageHandle {
         inner: image::DynamicImage::ImageLuma8(out),
     }
 }
+
+/// Spread pixels randomly by up to `distance` pixels (deterministic per-pixel hash).
+pub fn effect_spread(handle: &ImageHandle, distance: u32) -> ImageHandle {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let img = handle.inner.to_rgba8();
+    let (w, h) = (img.width(), img.height());
+    let d = distance as i32;
+    let mut out = img.clone();
+    for y in 0..h as i32 {
+        for x in 0..w as i32 {
+            let mut hasher = DefaultHasher::new();
+            (x, y).hash(&mut hasher);
+            let hash = hasher.finish();
+            let range = 2 * d + 1;
+            let dx = if range > 0 {
+                (hash as i32).rem_euclid(range) - d
+            } else {
+                0
+            };
+            let dy = if range > 0 {
+                ((hash >> 16) as i32).rem_euclid(range) - d
+            } else {
+                0
+            };
+            let sx = (x + dx).clamp(0, w as i32 - 1) as u32;
+            let sy = (y + dy).clamp(0, h as i32 - 1) as u32;
+            out.put_pixel(x as u32, y as u32, *img.get_pixel(sx, sy));
+        }
+    }
+    let di = image::DynamicImage::ImageRgba8(out);
+    let result = match &handle.inner {
+        image::DynamicImage::ImageRgb8(_) => image::DynamicImage::ImageRgb8(di.to_rgb8()),
+        image::DynamicImage::ImageLuma8(_) => image::DynamicImage::ImageLuma8(di.to_luma8()),
+        image::DynamicImage::ImageLumaA8(_) => {
+            image::DynamicImage::ImageLumaA8(di.to_luma_alpha8())
+        }
+        _ => di,
+    };
+    ImageHandle { inner: result }
+}

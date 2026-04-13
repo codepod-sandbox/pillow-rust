@@ -343,6 +343,147 @@ impl ImagingCore {
         }
     }
 
+    fn paste(
+        &mut self,
+        im: &ImagingCore,
+        box_: Option<(i32, i32, i32, i32)>,
+        mask: Option<&ImagingCore>,
+    ) -> PyResult<()> {
+        let (x, y) = if let Some((x0, y0, _, _)) = box_ {
+            (x0, y0)
+        } else {
+            (0, 0)
+        };
+        pil_rust_core::paste(&mut self.handle, &im.handle, x, y, mask.map(|m| &m.handle));
+        Ok(())
+    }
+
+    fn alpha_composite(
+        &mut self,
+        im: &ImagingCore,
+        dest: Option<(i32, i32)>,
+        source: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let _ = dest;
+        let _ = source;
+        let result = pil_rust_core::alpha_composite(&self.handle, &im.handle)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        self.handle = result;
+        Ok(())
+    }
+
+    fn tobytes(&self) -> Vec<u8> {
+        pil_rust_core::tobytes(&self.handle)
+    }
+
+    fn frombytes(&mut self, data: &[u8]) -> PyResult<()> {
+        let (w, h) = pil_rust_core::size(&self.handle);
+        let m = pil_rust_core::mode(&self.handle).to_owned();
+        self.handle = pil_rust_core::frombytes(&m, w, h, data)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    fn getdata(&self, scale: Option<f64>, offset: Option<f64>) -> Vec<Vec<u8>> {
+        let _ = scale;
+        let _ = offset;
+        pil_rust_core::getdata(&self.handle)
+    }
+
+    fn putdata(&mut self, data: &[u8], scale: Option<f64>, offset: Option<f64>) {
+        let _ = scale;
+        let _ = offset;
+        pil_rust_core::putdata(&mut self.handle, data);
+    }
+
+    fn quantize(
+        &self,
+        colors: usize,
+        method: Option<i32>,
+        kmeans: Option<i32>,
+        palette: Option<&ImagingCore>,
+    ) -> PyResult<ImagingCore> {
+        let _ = method;
+        let _ = kmeans;
+        let _ = palette;
+        let handle = pil_rust_core::quantize(&self.handle, colors)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(ImagingCore { handle })
+    }
+
+    fn effect_spread(&self, distance: u32) -> ImagingCore {
+        ImagingCore {
+            handle: pil_rust_core::effect_spread(&self.handle, distance),
+        }
+    }
+
+    fn save_ppm(&self, fp: &Bound<'_, PyAny>) -> PyResult<()> {
+        use pyo3::types::PyBytes;
+        let data = pil_rust_core::save(&self.handle, "ppm")
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        fp.call_method1("write", (PyBytes::new(fp.py(), &data),))?;
+        Ok(())
+    }
+
+    #[getter]
+    fn ptr(&self) -> usize {
+        &self.handle as *const _ as usize
+    }
+
+    fn isblock(&self) -> bool {
+        false
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn color_lut_3d(
+        &self,
+        mode: &str,
+        filter: i32,
+        table_channels: i32,
+        size1: i32,
+        size2: i32,
+        size3: i32,
+        table: Vec<f32>,
+    ) -> PyResult<ImagingCore> {
+        let _ = (mode, filter, table_channels, size1, size2, size3, table);
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "color_lut_3d not implemented",
+        ))
+    }
+
+    fn getpalette(&self) -> PyResult<Vec<u8>> {
+        Err(pyo3::exceptions::PyValueError::new_err(
+            "image has no palette",
+        ))
+    }
+
+    fn getpalettemode(&self) -> PyResult<String> {
+        Err(pyo3::exceptions::PyValueError::new_err(
+            "image has no palette",
+        ))
+    }
+
+    fn putpalette(&mut self, data: &Bound<'_, PyAny>, rawmode: Option<&str>) -> PyResult<()> {
+        let _ = (data, rawmode);
+        Err(pyo3::exceptions::PyValueError::new_err(
+            "image has no palette",
+        ))
+    }
+
+    fn putpalettealpha(&mut self, index: i32, alpha: i32) -> PyResult<()> {
+        let _ = (index, alpha);
+        Err(pyo3::exceptions::PyValueError::new_err(
+            "image has no palette",
+        ))
+    }
+
+    fn putpalettealphas(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
+        let _ = data;
+        Err(pyo3::exceptions::PyValueError::new_err(
+            "image has no palette",
+        ))
+    }
+
     fn transform(
         &self,
         size: (u32, u32),
