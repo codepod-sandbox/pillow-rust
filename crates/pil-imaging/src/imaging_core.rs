@@ -245,6 +245,62 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
+    fn histogram(
+        &self,
+        mask: Option<&ImagingCore>,
+        extrema: Option<&Bound<'_, PyAny>>,
+    ) -> Vec<u32> {
+        let _ = extrema;
+        match mask {
+            Some(m) => pil_rust_core::histogram_masked(&self.handle, &m.handle),
+            None => pil_rust_core::histogram(&self.handle),
+        }
+    }
+
+    fn getbbox(&self) -> Option<(u32, u32, u32, u32)> {
+        pil_rust_core::getbbox(&self.handle)
+    }
+
+    fn getextrema(&self) -> Vec<(u8, u8)> {
+        pil_rust_core::getextrema(&self.handle)
+    }
+
+    fn getcolors(&self, maxcolors: Option<usize>, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        use pyo3::types::{PyList, PyTuple};
+        let max = maxcolors.unwrap_or(256);
+        let colors = pil_rust_core::getcolors(&self.handle, max);
+        match colors {
+            None => Ok(None),
+            Some(entries) => {
+                let mode = pil_rust_core::mode(&self.handle);
+                let list = PyList::empty(py);
+                for (count, px) in entries {
+                    let color: Py<PyAny> = match mode {
+                        "L" => px[0].into_pyobject(py)?.into_any().unbind(),
+                        "LA" => PyTuple::new(py, [px[0], px[3]])?.into_any().unbind(),
+                        "RGB" => PyTuple::new(py, [px[0], px[1], px[2]])?.into_any().unbind(),
+                        _ => PyTuple::new(py, [px[0], px[1], px[2], px[3]])?
+                            .into_any()
+                            .unbind(),
+                    };
+                    let count_obj: Py<PyAny> = count.into_pyobject(py)?.into_any().unbind();
+                    let pair = PyTuple::new(py, [count_obj, color])?.into_any().unbind();
+                    list.append(pair)?;
+                }
+                Ok(Some(list.into_any().unbind()))
+            }
+        }
+    }
+
+    fn getprojection(&self) -> (Vec<u32>, Vec<u32>) {
+        pil_rust_core::getprojection(&self.handle)
+    }
+
+    fn entropy(&self, mask: Option<&ImagingCore>, extrema: Option<&Bound<'_, PyAny>>) -> f64 {
+        let _ = extrema;
+        pil_rust_core::entropy(&self.handle, mask.map(|m| &m.handle))
+    }
+
     fn transform(
         &self,
         size: (u32, u32),

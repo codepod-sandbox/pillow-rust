@@ -2729,3 +2729,77 @@ pub fn convert_matrix(
     };
     Ok(ImageHandle { inner: result })
 }
+
+/// Histogram restricted to pixels where mask pixel > 0.
+pub fn histogram_masked(handle: &ImageHandle, mask: &ImageHandle) -> Vec<u32> {
+    let img = handle.inner.to_rgba8();
+    let msk = mask.inner.to_luma8();
+    let (w, h) = (img.width(), img.height());
+    let bands: usize = match mode(handle) {
+        "L" | "P" => 1,
+        "LA" => 2,
+        "RGB" => 3,
+        _ => 4,
+    };
+    let mut hist = vec![0u32; 256 * bands];
+    for y in 0..h {
+        for x in 0..w {
+            let mx = x.min(msk.width() - 1);
+            let my = y.min(msk.height() - 1);
+            if msk.get_pixel(mx, my)[0] == 0 {
+                continue;
+            }
+            let px = img.get_pixel(x, y);
+            for b in 0..bands {
+                hist[b * 256 + px[b] as usize] += 1;
+            }
+        }
+    }
+    hist
+}
+
+/// Returns (col_projection, row_projection): non-zero pixel counts per column and per row.
+/// For RGB/RGBA images, a pixel is non-zero if any channel > 0.
+pub fn getprojection(handle: &ImageHandle) -> (Vec<u32>, Vec<u32>) {
+    let (w, h) = (handle.inner.width(), handle.inner.height());
+    let img = handle.inner.to_rgba8();
+    let bands: usize = match mode(handle) {
+        "L" | "P" => 1,
+        "LA" => 2,
+        "RGB" => 3,
+        _ => 4,
+    };
+    let mut col = vec![0u32; w as usize];
+    let mut row = vec![0u32; h as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let px = img.get_pixel(x, y);
+            let nonzero = (0..bands).any(|b| px[b] > 0);
+            if nonzero {
+                col[x as usize] += 1;
+                row[y as usize] += 1;
+            }
+        }
+    }
+    (col, row)
+}
+
+/// Shannon entropy: -sum(p * log2(p)) over histogram.
+pub fn entropy(handle: &ImageHandle, mask: Option<&ImageHandle>) -> f64 {
+    let hist = match mask {
+        Some(m) => histogram_masked(handle, m),
+        None => histogram(handle),
+    };
+    let total: u32 = hist.iter().sum();
+    if total == 0 {
+        return 0.0;
+    }
+    let mut e = 0.0f64;
+    for &count in &hist {
+        if count > 0 {
+            let p = count as f64 / total as f64;
+            e -= p * p.log2();
+        }
+    }
+    e
+}
