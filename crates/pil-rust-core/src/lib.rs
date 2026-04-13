@@ -175,8 +175,112 @@ pub fn putpixel(handle: &mut ImageHandle, x: u32, y: u32, color: [u8; 4]) {
 
 pub fn resize(handle: &ImageHandle, w: u32, h: u32, filter: &str) -> ImageHandle {
     let f = parse_filter(filter);
+
+    // For non-nearest filters on alpha-bearing images, use alpha-premultiplied
+    // interpolation to avoid colour bleed from transparent pixels.
+    if f != image::imageops::FilterType::Nearest {
+        if let DynamicImage::ImageRgba8(ref src) = handle.inner {
+            return ImageHandle {
+                inner: DynamicImage::ImageRgba8(resize_rgba_premult(src, w, h, f)),
+            };
+        }
+        if let DynamicImage::ImageLumaA8(ref src) = handle.inner {
+            return ImageHandle {
+                inner: DynamicImage::ImageLumaA8(resize_lumaa_premult(src, w, h, f)),
+            };
+        }
+    }
+
     ImageHandle {
         inner: handle.inner.resize_exact(w, h, f),
+    }
+}
+
+fn resize_rgba_premult(
+    src: &ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    w: u32,
+    h: u32,
+    f: image::imageops::FilterType,
+) -> ImageBuffer<image::Rgba<u8>, Vec<u8>> {
+    let (sw, sh) = src.dimensions();
+    // Premultiply alpha
+    let mut pm: ImageBuffer<image::Rgba<u8>, Vec<u8>> = ImageBuffer::new(sw, sh);
+    for (x, y, p) in src.enumerate_pixels() {
+        let image::Rgba([r, g, b, a]) = *p;
+        let af = a as f32 / 255.0;
+        pm.put_pixel(
+            x,
+            y,
+            image::Rgba([
+                (r as f32 * af + 0.5) as u8,
+                (g as f32 * af + 0.5) as u8,
+                (b as f32 * af + 0.5) as u8,
+                a,
+            ]),
+        );
+    }
+    // Resize premultiplied image
+    let resized = DynamicImage::ImageRgba8(pm).resize_exact(w, h, f);
+    // Un-premultiply
+    if let DynamicImage::ImageRgba8(ref rb) = resized {
+        let mut out: ImageBuffer<image::Rgba<u8>, Vec<u8>> = ImageBuffer::new(w, h);
+        for (x, y, p) in rb.enumerate_pixels() {
+            let image::Rgba([pr, pg, pb, a]) = *p;
+            let (r, g, b) = if a == 0 {
+                (0, 0, 0)
+            } else {
+                let af = a as f32 / 255.0;
+                (
+                    ((pr as f32 / af + 0.5) as u32).min(255) as u8,
+                    ((pg as f32 / af + 0.5) as u32).min(255) as u8,
+                    ((pb as f32 / af + 0.5) as u32).min(255) as u8,
+                )
+            };
+            out.put_pixel(x, y, image::Rgba([r, g, b, a]));
+        }
+        return out;
+    }
+    // Fallback (shouldn't happen)
+    match resized {
+        DynamicImage::ImageRgba8(b) => b,
+        _ => unreachable!(),
+    }
+}
+
+fn resize_lumaa_premult(
+    src: &ImageBuffer<image::LumaA<u8>, Vec<u8>>,
+    w: u32,
+    h: u32,
+    f: image::imageops::FilterType,
+) -> ImageBuffer<image::LumaA<u8>, Vec<u8>> {
+    let (sw, sh) = src.dimensions();
+    // Premultiply alpha
+    let mut pm: ImageBuffer<image::LumaA<u8>, Vec<u8>> = ImageBuffer::new(sw, sh);
+    for (x, y, p) in src.enumerate_pixels() {
+        let image::LumaA([l, a]) = *p;
+        let af = a as f32 / 255.0;
+        pm.put_pixel(x, y, image::LumaA([(l as f32 * af + 0.5) as u8, a]));
+    }
+    // Resize premultiplied image
+    let resized = DynamicImage::ImageLumaA8(pm).resize_exact(w, h, f);
+    // Un-premultiply
+    if let DynamicImage::ImageLumaA8(ref rb) = resized {
+        let mut out: ImageBuffer<image::LumaA<u8>, Vec<u8>> = ImageBuffer::new(w, h);
+        for (x, y, p) in rb.enumerate_pixels() {
+            let image::LumaA([pl, a]) = *p;
+            let l = if a == 0 {
+                0
+            } else {
+                let af = a as f32 / 255.0;
+                ((pl as f32 / af + 0.5) as u32).min(255) as u8
+            };
+            out.put_pixel(x, y, image::LumaA([l, a]));
+        }
+        return out;
+    }
+    match resized {
+        DynamicImage::ImageLumaA8(b) => b,
+        _ => unreachable!(),
     }
 }
 

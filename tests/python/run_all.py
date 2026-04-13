@@ -105,6 +105,10 @@ test_files = [
     "test_imagepath_upstream",
     "test_imagedraw_upstream",
     "test_image_resize_upstream",
+    "test_image_thumbnail_upstream",
+    "test_image_getbands_upstream",
+    "test_image_transform_upstream",
+    "test_imagedraw2_upstream",
 ]
 
 total_pass = 0

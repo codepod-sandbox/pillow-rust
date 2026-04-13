@@ -301,16 +301,19 @@ def Draw(im):
 # ---------------------------------------------------------------------------
 
 def _normalise_box(xy):
-    """Flatten ``[(x0,y0),(x1,y1)]`` or ``[x0,y0,x1,y1]`` to flat list, ensuring min/max order."""
+    """Flatten ``[(x0,y0),(x1,y1)]`` or ``[x0,y0,x1,y1]`` to flat list.
+
+    Raises ValueError if coordinates are not in ascending order (x0 <= x1, y0 <= y1).
+    """
     if len(xy) == 2 and hasattr(xy[0], "__len__"):
         flat = [xy[0][0], xy[0][1], xy[1][0], xy[1][1]]
     else:
         flat = list(xy)
-    # Normalize so x0 <= x1, y0 <= y1
-    if flat[0] > flat[2]:
-        flat[0], flat[2] = flat[2], flat[0]
-    if flat[1] > flat[3]:
-        flat[1], flat[3] = flat[3], flat[1]
+    if flat[0] > flat[2] or flat[1] > flat[3]:
+        raise ValueError(
+            "Bounding box values must be ordered as (x0, y0, x1, y1) "
+            "where x0 <= x1 and y0 <= y1"
+        )
     return flat
 
 
