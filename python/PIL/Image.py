@@ -620,6 +620,48 @@ class Image:
         """Return a list of (count, color) tuples, or None if too many colors."""
         return _pil_native.image_getcolors(self._handle, int(maxcolors))
 
+    def entropy(self, mask=None, extrema=None):
+        """Calculate the entropy of the image.
+
+        Returns Shannon entropy: -sum(p * log2(p)) where p is the normalised
+        histogram probability of each non-zero bin.
+        """
+        import math
+        hist = self.histogram(mask=mask)
+        total = sum(hist)
+        if total == 0:
+            return 0.0
+        result = 0.0
+        for count in hist:
+            if count > 0:
+                p = count / total
+                result -= p * math.log(p, 2)
+        return result
+
+    def getprojection(self):
+        """Return horizontal and vertical projections.
+
+        Returns two lists: (horizontal, vertical) where horizontal[x] is the
+        number of non-zero pixels in column x, and vertical[y] is the number of
+        non-zero pixels in row y.
+        """
+        w, h = self.size
+        hproj = [0] * w
+        vproj = [0] * h
+        data = list(self.getdata())
+        for y in range(h):
+            for x in range(w):
+                pixel = data[y * w + x]
+                # Count as non-zero: scalar > 0 or any channel > 0
+                if isinstance(pixel, (tuple, list)):
+                    nonzero = any(v > 0 for v in pixel)
+                else:
+                    nonzero = pixel > 0
+                if nonzero:
+                    hproj[x] += 1
+                    vproj[y] += 1
+        return hproj, vproj
+
     def alpha_composite(self, im, dest=(0, 0), source=None):
         """Alpha composite *im* over this image in-place.
 

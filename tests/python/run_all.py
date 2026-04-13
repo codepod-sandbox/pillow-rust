@@ -110,6 +110,11 @@ test_files = [
     "test_image_transform_upstream",
     "test_imagedraw2_upstream",
     "test_image_reduce_upstream",
+    "test_imageenhance_alpha_upstream",
+    "test_image_regression",
+    "test_image_stress",
+    "test_image_entropy_upstream",
+    "test_image_getprojection_upstream",
 ]
 
 total_pass = 0
