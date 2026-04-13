@@ -1786,6 +1786,34 @@ pub fn merge(target_mode: &str, channels: &[&ImageHandle]) -> Result<ImageHandle
     Ok(ImageHandle { inner: img })
 }
 
+/// Extract band n (0-based) as an L-mode image.
+pub fn getband(handle: &ImageHandle, n: usize) -> Result<ImageHandle> {
+    let bands = split(handle);
+    bands
+        .into_iter()
+        .nth(n)
+        .map(Ok)
+        .unwrap_or_else(|| Err(PilError::InvalidOperation(format!("band {n} out of range"))))
+}
+
+/// Replace band n with src (L-mode, same size).
+pub fn putband(handle: &ImageHandle, src: &ImageHandle, n: usize) -> Result<ImageHandle> {
+    let mut bands = split(handle);
+    if n >= bands.len() {
+        return Err(PilError::InvalidOperation(format!("band {n} out of range")));
+    }
+    bands[n] = src.clone();
+    let refs: Vec<&ImageHandle> = bands.iter().collect();
+    merge(mode(handle), &refs)
+}
+
+/// Fill band n with constant value.
+pub fn fillband(handle: &ImageHandle, n: usize, value: u8) -> Result<ImageHandle> {
+    let (w, h) = (handle.inner.width(), handle.inner.height());
+    let flat = new_image("L", w, h, &[value])?;
+    putband(handle, &flat, n)
+}
+
 // ---------------------------------------------------------------------------
 // Statistics / analysis
 // ---------------------------------------------------------------------------

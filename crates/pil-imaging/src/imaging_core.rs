@@ -220,6 +220,31 @@ impl ImagingCore {
         }
     }
 
+    fn split(&self) -> Vec<ImagingCore> {
+        pil_rust_core::split(&self.handle)
+            .into_iter()
+            .map(|h| ImagingCore { handle: h })
+            .collect()
+    }
+
+    fn getband(&self, n: usize) -> PyResult<ImagingCore> {
+        let handle = pil_rust_core::getband(&self.handle, n)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(ImagingCore { handle })
+    }
+
+    fn putband(&self, im: &ImagingCore, n: usize) -> PyResult<ImagingCore> {
+        let handle = pil_rust_core::putband(&self.handle, &im.handle, n)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(ImagingCore { handle })
+    }
+
+    fn fillband(&self, n: usize, value: i32) -> PyResult<ImagingCore> {
+        let handle = pil_rust_core::fillband(&self.handle, n, value.clamp(0, 255) as u8)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(ImagingCore { handle })
+    }
+
     fn transform(
         &self,
         size: (u32, u32),
