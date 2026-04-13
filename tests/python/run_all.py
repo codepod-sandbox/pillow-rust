@@ -115,6 +115,9 @@ test_files = [
     "test_image_stress",
     "test_image_entropy_upstream",
     "test_image_getprojection_upstream",
+    "test_imageops_usm_upstream",
+    "test_image_load_upstream",
+    "test_image_mode_upstream",
 ]
 
 total_pass = 0
