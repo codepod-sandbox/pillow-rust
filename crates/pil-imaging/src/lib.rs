@@ -231,24 +231,33 @@ fn outline() -> imaging_path::ImagingOutline {
 }
 
 #[pyfunction]
-#[pyo3(signature = (size, _xy, _color))]
+#[pyo3(signature = (size, extent, quality))]
 fn effect_mandelbrot(
     size: &Bound<'_, PyAny>,
-    _xy: &Bound<'_, PyAny>,
-    _color: i32,
+    extent: &Bound<'_, PyAny>,
+    quality: i32,
 ) -> PyResult<imaging_core::ImagingCore> {
     let (w, h) = extract_size(size)?;
-    let handle = pil_rust_core::new_image("RGB", w, h, &[0, 0, 0, 255])
+    // extent must be a 4-element sequence of floats
+    let ext_vec: Vec<f64> = extent.extract::<Vec<f64>>().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("extent must be a 4-element sequence")
+    })?;
+    if ext_vec.len() != 4 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "extent must have exactly 4 elements",
+        ));
+    }
+    let ext = [ext_vec[0], ext_vec[1], ext_vec[2], ext_vec[3]];
+    let handle = pil_rust_core::effect_mandelbrot(w, h, ext, quality)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Ok(imaging_core::ImagingCore { handle })
 }
 
 #[pyfunction]
-#[pyo3(signature = (size, _seed))]
-fn effect_noise(size: &Bound<'_, PyAny>, _seed: i32) -> PyResult<imaging_core::ImagingCore> {
+#[pyo3(signature = (size, sigma))]
+fn effect_noise(size: &Bound<'_, PyAny>, sigma: f64) -> PyResult<imaging_core::ImagingCore> {
     let (w, h) = extract_size(size)?;
-    let handle = pil_rust_core::new_image("L", w, h, &[128, 128, 128, 255])
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let handle = pil_rust_core::effect_noise(w, h, sigma);
     Ok(imaging_core::ImagingCore { handle })
 }
 

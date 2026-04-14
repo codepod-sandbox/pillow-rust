@@ -3592,6 +3592,7 @@ def open(
             image.info = {}
             image._exif = None
             image.fp = None
+            image.readonly = 1
             return image
         except Exception:
             pass  # fall through to original logic

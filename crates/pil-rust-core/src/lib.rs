@@ -1135,23 +1135,14 @@ pub fn getpalettemode(handle: &ImageHandle) -> Result<String> {
 
 /// Store palette bytes on the handle.
 /// `data_mode` is the mode of the incoming bytes (e.g. "RGB", "RGBA").
-/// Always normalises to a 256-entry array internally.
+/// Stores exactly the entries provided (up to 256), without padding.
 pub fn putpalette(handle: &mut ImageHandle, data: &[u8], data_mode: &str) {
     let stride = if data_mode == "RGBA" { 4 } else { 3 };
-    let n = data.len() / stride;
-    // Store as the given mode, padded/trimmed to exactly 256 entries
-    let mut pal = vec![0u8; 256 * stride];
-    for i in 0..n.min(256) {
-        pal[i * stride..i * stride + stride]
-            .copy_from_slice(&data[i * stride..i * stride + stride]);
-    }
+    let n = (data.len() / stride).min(256);
+    // Store exactly n entries — do NOT pad to 256
+    let pal = data[..n * stride].to_vec();
     handle.palette = Some(pal);
     handle.palette_mode = Some(data_mode.to_string());
-    // Ensure mode_override is consistent
-    if handle.mode_override == Some("P") && stride == 4 {
-        handle.mode_override = Some("P"); // palette has RGBA but image stays P
-                                          // Convert internal storage to RGBA palette, keep pixels as indices
-    }
 }
 
 pub fn putpalettealpha(handle: &mut ImageHandle, index: usize, alpha: u8) -> Result<()> {
@@ -1163,10 +1154,11 @@ pub fn putpalettealpha(handle: &mut ImageHandle, index: usize, alpha: u8) -> Res
     let pal = handle
         .palette
         .get_or_insert_with(|| vec![0u8; 256 * stride]);
-    // If palette is RGB (3-byte), upgrade to RGBA (4-byte)
+    // If palette is RGB (3-byte), upgrade to RGBA (4-byte) preserving actual entry count
     if stride == 3 {
-        let mut rgba_pal = vec![255u8; 256 * 4];
-        for i in 0..256 {
+        let n_entries = pal.len() / 3;
+        let mut rgba_pal = vec![255u8; n_entries * 4];
+        for i in 0..n_entries {
             rgba_pal[i * 4] = pal.get(i * 3).copied().unwrap_or(0);
             rgba_pal[i * 4 + 1] = pal.get(i * 3 + 1).copied().unwrap_or(0);
             rgba_pal[i * 4 + 2] = pal.get(i * 3 + 2).copied().unwrap_or(0);
@@ -1175,9 +1167,11 @@ pub fn putpalettealpha(handle: &mut ImageHandle, index: usize, alpha: u8) -> Res
         handle.palette_mode = Some("RGBA".to_string());
     }
     let pal = handle.palette.as_mut().unwrap();
-    if index < 256 {
-        pal[index * 4 + 3] = alpha;
+    let needed = index * 4 + 4;
+    if needed > pal.len() {
+        pal.resize(needed, 255);
     }
+    pal[index * 4 + 3] = alpha;
     Ok(())
 }
 
@@ -1190,10 +1184,11 @@ pub fn putpalettealphas(handle: &mut ImageHandle, alphas: &[u8]) -> Result<()> {
     let pal = handle
         .palette
         .get_or_insert_with(|| vec![0u8; 256 * stride]);
-    // Upgrade to RGBA if needed
+    // Upgrade to RGBA if needed, preserving actual entry count
     if stride == 3 {
-        let mut rgba_pal = vec![255u8; 256 * 4];
-        for i in 0..256 {
+        let n_entries = pal.len() / 3;
+        let mut rgba_pal = vec![255u8; n_entries * 4];
+        for i in 0..n_entries {
             rgba_pal[i * 4] = pal.get(i * 3).copied().unwrap_or(0);
             rgba_pal[i * 4 + 1] = pal.get(i * 3 + 1).copied().unwrap_or(0);
             rgba_pal[i * 4 + 2] = pal.get(i * 3 + 2).copied().unwrap_or(0);
@@ -1202,7 +1197,12 @@ pub fn putpalettealphas(handle: &mut ImageHandle, alphas: &[u8]) -> Result<()> {
         handle.palette_mode = Some("RGBA".to_string());
     }
     let pal = handle.palette.as_mut().unwrap();
-    for (i, &a) in alphas.iter().enumerate().take(256) {
+    let n_alphas = alphas.len().min(256);
+    let needed = n_alphas * 4;
+    if needed > pal.len() {
+        pal.resize(needed, 255);
+    }
+    for (i, &a) in alphas.iter().enumerate().take(n_alphas) {
         pal[i * 4 + 3] = a;
     }
     Ok(())
@@ -4094,6 +4094,100 @@ pub fn effect_spread(handle: &ImageHandle, distance: u32) -> ImageHandle {
         palette: None,
         palette_mode: None,
     }
+}
+
+/// Splitmix64 finalizer — excellent avalanche properties for per-pixel hashing.
+fn splitmix64(x: u64) -> u64 {
+    let x = x ^ (x >> 30);
+    let x = x.wrapping_mul(0xbf58476d1ce4e5b9);
+    let x = x ^ (x >> 27);
+    let x = x.wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
+}
+
+/// Generate Gaussian noise centered around 128.
+/// Uses per-pixel hash so adjacent pixels have uncorrelated values.
+pub fn effect_noise(width: u32, height: u32, sigma: f64) -> ImageHandle {
+    use std::f64::consts::PI;
+    let buf = image::ImageBuffer::from_fn(width, height, |x, y| {
+        let idx = y as u64 * width as u64 + x as u64;
+        // Two independent hash values for Box-Muller
+        let h1 = splitmix64(idx.wrapping_add(0x9e3779b97f4a7c15));
+        let h2 = splitmix64(idx ^ 0x6c62272e07bb0142);
+        let u1 = (h1 as f64 + 1.0) / (u64::MAX as f64 + 2.0);
+        let u2 = h2 as f64 / (u64::MAX as f64 + 1.0);
+        let mag = sigma * (-2.0 * u1.ln()).sqrt();
+        let noise = mag * (2.0 * PI * u2).cos();
+        let v = (128.0 + noise).clamp(0.0, 255.0) as u8;
+        image::Luma([v])
+    });
+    ImageHandle {
+        inner: image::DynamicImage::ImageLuma8(buf),
+        mode_override: None,
+        palette: None,
+        palette_mode: None,
+    }
+}
+
+/// Render Mandelbrot set (L mode). Matches Pillow's ImagingEffectMandelbrot exactly.
+/// Raises error if quality < 2 or extent width/height < 0.
+pub fn effect_mandelbrot(
+    width: u32,
+    height: u32,
+    extent: [f64; 4],
+    quality: i32,
+) -> Result<ImageHandle> {
+    let ext_w = extent[2] - extent[0];
+    let ext_h = extent[3] - extent[1];
+    if ext_w < 0.0 || ext_h < 0.0 || quality < 2 {
+        return Err(PilError::InvalidOperation(
+            "bad extent or quality (quality must be ≥ 2, width/height must be ≥ 0)".into(),
+        ));
+    }
+    // Pillow uses (size-1) as divisor so edges map exactly to extent boundaries
+    let dr = if width > 1 {
+        ext_w / (width - 1) as f64
+    } else {
+        0.0
+    };
+    let di = if height > 1 {
+        ext_h / (height - 1) as f64
+    } else {
+        0.0
+    };
+    let radius = 100.0f64;
+    let buf = image::ImageBuffer::from_fn(width, height, |x, y| {
+        let cr = x as f64 * dr + extent[0];
+        let ci = y as f64 * di + extent[1];
+        let mut x1 = 0.0f64;
+        let mut y1 = 0.0f64;
+        let mut xi2 = 0.0f64;
+        let mut yi2 = 0.0f64;
+        // Pillow C: update z FIRST, then check escape (k starts at 1)
+        let pixel: u8 = 'outer: {
+            let mut k = 1i32;
+            loop {
+                y1 = 2.0 * x1 * y1 + ci;
+                x1 = xi2 - yi2 + cr;
+                xi2 = x1 * x1;
+                yi2 = y1 * y1;
+                if xi2 + yi2 > radius {
+                    break 'outer (k * 255 / quality) as u8;
+                }
+                if k >= quality {
+                    break 'outer 0u8; // in set
+                }
+                k += 1;
+            }
+        };
+        image::Luma([pixel])
+    });
+    Ok(ImageHandle {
+        inner: image::DynamicImage::ImageLuma8(buf),
+        mode_override: None,
+        palette: None,
+        palette_mode: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
