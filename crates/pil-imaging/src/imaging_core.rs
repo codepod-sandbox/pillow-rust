@@ -792,6 +792,7 @@ impl ImagingCore {
     ///   im.putpalette(palette_mode, rawmode, data)  -- from Image.load()
     ///   im.putpalette(data, rawmode)                -- direct user calls
     /// We detect which by checking whether the first arg is a string or bytes.
+    /// rawmode suffix ";L" means planar layout: all R values, then all G, then all B.
     #[pyo3(signature = (arg1, arg2=None, arg3=None))]
     fn putpalette(
         &mut self,
@@ -799,20 +800,38 @@ impl ImagingCore {
         arg2: Option<&Bound<'_, PyAny>>,
         arg3: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        let (data_mode, bytes) = if let Ok(mode_str) = arg1.extract::<String>() {
+        let (data_mode, rawmode, bytes) = if let Ok(mode_str) = arg1.extract::<String>() {
             // Called as putpalette(palette_mode, rawmode, data)
+            let raw_str = arg2
+                .and_then(|a| a.extract::<String>().ok())
+                .unwrap_or_else(|| mode_str.clone());
             let data = arg3.or(arg2).ok_or_else(|| {
                 pyo3::exceptions::PyTypeError::new_err("putpalette: missing data")
             })?;
             let bytes = extract_palette_bytes(data)?;
-            (mode_str, bytes)
+            (mode_str, raw_str, bytes)
         } else {
             // Called as putpalette(data, rawmode)
             let bytes = extract_palette_bytes(arg1)?;
             let mode_str = arg2
                 .and_then(|a| a.extract::<String>().ok())
                 .unwrap_or_else(|| "RGB".to_string());
-            (mode_str, bytes)
+            (mode_str.clone(), mode_str, bytes)
+        };
+        // Rawmode ending in ";L" means planar layout: [all-R][all-G][all-B] instead of interleaved.
+        // Convert to interleaved before storing.
+        let bytes = if rawmode.ends_with(";L") {
+            let channels = if data_mode == "RGBA" { 4 } else { 3 };
+            let n = bytes.len() / channels;
+            let mut interleaved = Vec::with_capacity(bytes.len());
+            for i in 0..n {
+                for c in 0..channels {
+                    interleaved.push(bytes.get(c * n + i).copied().unwrap_or(0));
+                }
+            }
+            interleaved
+        } else {
+            bytes
         };
         pil_rust_core::putpalette(&mut self.handle, &bytes, &data_mode);
         // Ensure mode_override is P or PA
@@ -886,6 +905,24 @@ impl ImagingCore {
                     ));
                 }
                 pil_rust_core::transform_perspective(
+                    &source.handle,
+                    w,
+                    h,
+                    &[d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]],
+                )
+            }
+            3 => {
+                // QUAD: 8-coefficient bilinear transform
+                // data = [a0, a1, a2, a3, b0, b1, b2, b3]
+                // source_x = a0 + a1*u + a2*v + a3*u*v
+                // source_y = b0 + b1*u + b2*v + b3*u*v
+                let d: Vec<f64> = data.extract()?;
+                if d.len() < 8 {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "quad needs 8 coefficients",
+                    ));
+                }
+                pil_rust_core::transform_quad(
                     &source.handle,
                     w,
                     h,

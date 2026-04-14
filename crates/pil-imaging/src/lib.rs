@@ -203,14 +203,14 @@ fn path(coords: Option<&Bound<'_, PyAny>>) -> PyResult<imaging_path::ImagingPath
     let Some(coords) = coords else {
         return Ok(imaging_path::ImagingPath { coords: vec![] });
     };
-    let pts: Vec<(f32, f32)> = if let Ok(flat) = coords.extract::<Vec<f32>>() {
+    let pts: Vec<(f64, f64)> = if let Ok(flat) = coords.extract::<Vec<f64>>() {
         if flat.len() % 2 != 0 {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "incorrect number of coordinates",
             ));
         }
         flat.chunks(2).map(|c| (c[0], c[1])).collect()
-    } else if let Ok(pairs) = coords.extract::<Vec<(f32, f32)>>() {
+    } else if let Ok(pairs) = coords.extract::<Vec<(f64, f64)>>() {
         pairs
     } else {
         return Err(pyo3::exceptions::PyTypeError::new_err(

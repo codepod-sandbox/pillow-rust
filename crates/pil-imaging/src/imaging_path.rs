@@ -6,7 +6,7 @@ use pyo3::types::{PyList, PyTuple};
 /// exists so that `Image.core.outline` can be imported without AttributeError.
 #[pyclass(name = "_Outline")]
 pub struct ImagingOutline {
-    pub points: Vec<(f32, f32)>,
+    pub points: Vec<(f64, f64)>,
 }
 
 #[pymethods]
@@ -18,7 +18,7 @@ impl ImagingOutline {
         }
     }
 
-    fn move_(&mut self, x: f32, y: f32) {
+    fn move_(&mut self, x: f64, y: f64) {
         if let Some(last) = self.points.last_mut() {
             *last = (x, y);
         } else {
@@ -27,15 +27,15 @@ impl ImagingOutline {
     }
 
     #[pyo3(name = "move")]
-    fn move_py(&mut self, x: f32, y: f32) {
+    fn move_py(&mut self, x: f64, y: f64) {
         self.move_(x, y);
     }
 
-    fn line(&mut self, x: f32, y: f32) {
+    fn line(&mut self, x: f64, y: f64) {
         self.points.push((x, y));
     }
 
-    fn curve(&mut self, x1: f32, y1: f32, _x2: f32, _y2: f32, x3: f32, y3: f32) {
+    fn curve(&mut self, x1: f64, y1: f64, _x2: f64, _y2: f64, x3: f64, y3: f64) {
         // Approximate cubic bezier with just endpoints for stub
         self.points.push((x1, y1));
         self.points.push((x3, y3));
@@ -52,8 +52,8 @@ impl ImagingOutline {
     fn transform(&mut self, matrix: (f64, f64, f64, f64, f64, f64)) {
         let (a, b, c, d, e, f) = matrix;
         for (x, y) in &mut self.points {
-            let nx = a as f32 * *x + b as f32 * *y + c as f32;
-            let ny = d as f32 * *x + e as f32 * *y + f as f32;
+            let nx = a * *x + b * *y + c;
+            let ny = d * *x + e * *y + f;
             *x = nx;
             *y = ny;
         }
@@ -62,7 +62,7 @@ impl ImagingOutline {
 
 #[pyclass]
 pub struct ImagingPath {
-    pub coords: Vec<(f32, f32)>,
+    pub coords: Vec<(f64, f64)>,
 }
 
 #[pymethods]
@@ -100,7 +100,7 @@ impl ImagingPath {
     fn tolist(&self, flat: Option<&Bound<'_, pyo3::PyAny>>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let is_flat = flat.map(|v| v.is_truthy()).transpose()?.unwrap_or(false);
         if is_flat {
-            let flat_vec: Vec<f32> = self.coords.iter().flat_map(|(x, y)| [*x, *y]).collect();
+            let flat_vec: Vec<f64> = self.coords.iter().flat_map(|(x, y)| [*x, *y]).collect();
             Ok(flat_vec.into_pyobject(py)?.into_any().unbind())
         } else {
             let list = PyList::empty(py);
@@ -112,14 +112,14 @@ impl ImagingPath {
         }
     }
 
-    fn getbbox(&self) -> Option<(f32, f32, f32, f32)> {
+    fn getbbox(&self) -> Option<(f64, f64, f64, f64)> {
         if self.coords.is_empty() {
             return None;
         }
-        let mut x0 = f32::MAX;
-        let mut y0 = f32::MAX;
-        let mut x1 = f32::MIN;
-        let mut y1 = f32::MIN;
+        let mut x0 = f64::MAX;
+        let mut y0 = f64::MAX;
+        let mut x1 = f64::MIN;
+        let mut y1 = f64::MIN;
         for (x, y) in &self.coords {
             x0 = x0.min(*x);
             y0 = y0.min(*y);
@@ -129,7 +129,7 @@ impl ImagingPath {
         Some((x0, y0, x1, y1))
     }
 
-    fn transform(&mut self, matrix: (f32, f32, f32, f32, f32, f32)) {
+    fn transform(&mut self, matrix: (f64, f64, f64, f64, f64, f64)) {
         let (a, b, c, d, e, f) = matrix;
         for (x, y) in &mut self.coords {
             let nx = a * *x + b * *y + c;
@@ -139,7 +139,7 @@ impl ImagingPath {
         }
     }
 
-    fn compact(&mut self, distance: f32) -> usize {
+    fn compact(&mut self, distance: f64) -> usize {
         if self.coords.is_empty() {
             return 0;
         }
@@ -167,7 +167,7 @@ impl ImagingPath {
                 // Fall back to tuple form: func((x, y))
                 func.call1(((*x, *y),))?
             };
-            let result: (f32, f32) = result_raw.extract()?;
+            let result: (f64, f64) = result_raw.extract()?;
             *x = result.0;
             *y = result.1;
         }

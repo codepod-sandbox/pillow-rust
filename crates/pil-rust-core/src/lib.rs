@@ -736,6 +736,47 @@ pub fn transform_perspective(
     }
 }
 
+/// Apply a bilinear quad transform. `data` is [a0, a1, a2, a3, b0, b1, b2, b3] where:
+/// source_x = a0 + a1*u + a2*v + a3*u*v
+/// source_y = b0 + b1*u + b2*v + b3*u*v
+/// and u, v are the local pixel coordinates within the output box.
+pub fn transform_quad(
+    handle: &ImageHandle,
+    out_w: u32,
+    out_h: u32,
+    data: &[f64; 8],
+) -> ImageHandle {
+    let (sw, sh) = handle.inner.dimensions();
+    let src_mode = mode(handle);
+    let [a0, a1, a2, a3, b0, b1, b2, b3] = *data;
+
+    let mut out = DynamicImage::new_rgba8(out_w, out_h);
+    for oy in 0..out_h {
+        let v = oy as f64;
+        for ox in 0..out_w {
+            let u = ox as f64;
+            let sx = (a0 + a1 * u + a2 * v + a3 * u * v).round() as i32;
+            let sy = (b0 + b1 * u + b2 * v + b3 * u * v).round() as i32;
+            if sx >= 0 && sx < sw as i32 && sy >= 0 && sy < sh as i32 {
+                out.put_pixel(ox, oy, handle.inner.get_pixel(sx as u32, sy as u32));
+            }
+        }
+    }
+
+    let out = match src_mode {
+        "L" => DynamicImage::ImageLuma8(out.to_luma8()),
+        "LA" => DynamicImage::ImageLumaA8(out.to_luma_alpha8()),
+        "RGB" => DynamicImage::ImageRgb8(out.to_rgb8()),
+        _ => out,
+    };
+    ImageHandle {
+        inner: out,
+        mode_override: None,
+        palette: None,
+        palette_mode: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode conversion
 // ---------------------------------------------------------------------------
@@ -4163,7 +4204,7 @@ pub fn effect_mandelbrot(
         let mut y1 = 0.0f64;
         let mut xi2 = 0.0f64;
         let mut yi2 = 0.0f64;
-        // Pillow C: update z FIRST, then check escape (k starts at 1)
+        // Update z FIRST, then check escape (k starts at 1)
         let pixel: u8 = 'outer: {
             let mut k = 1i32;
             loop {

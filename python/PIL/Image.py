@@ -1127,6 +1127,8 @@ class Image:
             new_im.palette = ImagePalette.ImagePalette(
                 "RGB", new_im.im.getpalette("RGB")
             )
+            if self.mode in ("RGBA", "LA"):
+                new_im.palette.mode = "RGBA"
             if delete_trns:
                 # This could possibly happen if we requantize to fewer colors.
                 # The transparency would be totally off in that case.
@@ -1167,8 +1169,10 @@ class Image:
         if dither is None:
             dither = Dither.FLOYDSTEINBERG
 
-        # Sync Python-level palette to ImagingCore before P-mode conversions
-        if self.mode in ("P", "PA") and self.palette:
+        # Sync Python-level palette to ImagingCore before P-mode conversions,
+        # but only when dirty — don't overwrite an explicitly-set ImagingCore palette
+        # (e.g. remap_palette uses putpalette("RGB;L") directly on ImagingCore).
+        if self.mode in ("P", "PA") and self.palette and self.palette.dirty:
             self.im.putpalette(self.palette.tobytes(), self.palette.mode)
 
         try:
@@ -1291,6 +1295,8 @@ class Image:
         mode = im.im.getpalettemode()
         palette_data = im.im.getpalette(mode, mode)[: colors * len(mode)]
         im.palette = ImagePalette.ImagePalette(mode, palette_data)
+        if self.mode in ("RGBA", "LA"):
+            im.palette.mode = "RGBA"
 
         return im
 
@@ -2585,17 +2591,53 @@ class Image:
         _fp_path = fp
         if hasattr(_fp_path, "__fspath__"):
             _fp_path = os.fspath(_fp_path)
+        # Determine format and output target for fast path
+        _fast_fmt: str | None = None
+        _fast_target = None  # file path (str/bytes) or writable file object
         if isinstance(_fp_path, (str, bytes)):
             _ext = os.path.splitext(os.fspath(_fp_path) if isinstance(_fp_path, bytes) else _fp_path)[1][1:]
-            _fmt = (format or _ext).upper()
-            if _fmt:
-                try:
-                    _data = core.save_to_bytes(self.im, _fmt, **params)
-                    with builtins.open(_fp_path, "wb") as _f:
+            _fast_fmt = (format or _ext).upper() or None
+            _fast_target = _fp_path
+        elif format:
+            # File-like object with explicit format (e.g. tempfile + "JPEG")
+            _fast_fmt = format.upper()
+            _fast_target = fp
+        elif hasattr(fp, "name"):
+            # File-like object whose .name attribute reveals the format
+            _name = getattr(fp, "name", "")
+            try:
+                _name_str = os.fspath(_name) if hasattr(_name, "__fspath__") else str(_name)
+            except Exception:
+                _name_str = ""
+            if _name_str:
+                _ext2 = os.path.splitext(_name_str)[1][1:]
+                if _ext2:
+                    _fast_fmt = _ext2.upper()
+                    _fast_target = fp
+        if _fast_fmt and _fast_target is not None:
+            try:
+                self.load()
+                _data = core.save_to_bytes(self.im, _fast_fmt, **params)
+                # Inject EXIF metadata for formats that support it
+                _exif_param = params.get("exif")
+                if _exif_param is not None:
+                    _exif_bytes = (
+                        _exif_param.tobytes()
+                        if hasattr(_exif_param, "tobytes")
+                        else bytes(_exif_param)
+                    )
+                    if _fast_fmt in ("PNG",):
+                        _data = _inject_png_exif(_data, _exif_bytes)
+                    elif _fast_fmt in ("JPEG", "JPG"):
+                        _data = _inject_jpeg_exif(_data, _exif_bytes)
+                if isinstance(_fast_target, (str, bytes)):
+                    with builtins.open(_fast_target, "wb") as _f:
                         _f.write(_data)
-                    return
-                except Exception:
-                    pass  # fall through to original logic
+                else:
+                    _fast_target.write(_data)
+                return
+            except Exception:
+                pass  # fall through to original logic
         # --- end pillow-rust fast path ---
 
         filename: str | bytes = ""
@@ -3534,6 +3576,135 @@ def _decompression_bomb_check(size: tuple[int, int]) -> None:
         )
 
 
+def _parse_png_metadata(data: bytes) -> dict:
+    """Extract PNG metadata from raw bytes (eXIf, tRNS, iTXt XMP).
+    Used by the pillow-rust fast path to populate image.info."""
+    import struct as _struct
+    info: dict = {}
+    if len(data) < 8 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return info
+    colortype: int | None = None
+    trns_data: bytes | None = None
+    i = 8
+    while i + 12 <= len(data):
+        length = _struct.unpack(">I", data[i : i + 4])[0]
+        chunk_type = data[i + 4 : i + 8]
+        chunk_end = i + 8 + length
+        chunk_data = data[i + 8 : chunk_end]
+        if chunk_type == b"IHDR" and len(chunk_data) >= 10:
+            colortype = chunk_data[9]  # IHDR: width(4)+height(4)+bitdepth(1)+colortype(1)
+        elif chunk_type == b"eXIf":
+            info["exif"] = b"Exif\x00\x00" + chunk_data
+        elif chunk_type == b"tRNS":
+            trns_data = bytes(chunk_data)
+        elif chunk_type == b"iTXt":
+            null = chunk_data.find(b"\x00")
+            if null != -1:
+                keyword = chunk_data[:null].decode("latin-1", errors="replace")
+                j = null + 3  # skip null, compression_flag, compression_method
+                if j <= len(chunk_data):
+                    lang_end = chunk_data.find(b"\x00", j)
+                    if lang_end != -1:
+                        j = lang_end + 1
+                        tkey_end = chunk_data.find(b"\x00", j)
+                        if tkey_end != -1:
+                            xmp_bytes = chunk_data[tkey_end + 1 :]
+                            if keyword == "XML:com.adobe.xmp":
+                                # Mirror PngImagePlugin: set both "xmp" (bytes) and
+                                # "XML:com.adobe.xmp" (string), matching PngImagePlugin.py:656-666
+                                info["xmp"] = xmp_bytes
+                                info["XML:com.adobe.xmp"] = xmp_bytes.decode(
+                                    "utf-8", errors="replace"
+                                )
+                            elif keyword == "xmp":
+                                info["xmp"] = xmp_bytes
+        elif chunk_type == b"tEXt":
+            null = chunk_data.find(b"\x00")
+            if null != -1:
+                keyword = chunk_data[:null].decode("latin-1", errors="replace")
+                value = chunk_data[null + 1 :].decode("latin-1", errors="replace")
+                if keyword == "XML:com.adobe.xmp":
+                    info["xmp"] = chunk_data[null + 1 :]
+                    info["XML:com.adobe.xmp"] = value
+                elif keyword == "Raw profile type exif":
+                    # ImageMagick-style hex-encoded EXIF in tEXt chunk
+                    info["Raw profile type exif"] = value
+        elif chunk_type == b"IEND":
+            break
+        i = chunk_end + 4  # skip CRC
+    # Interpret tRNS based on PNG color type
+    if trns_data is not None and colortype is not None:
+        if colortype == 2 and len(trns_data) >= 6:  # RGB
+            r = ((trns_data[0] << 8) | trns_data[1]) & 0xFF
+            g = ((trns_data[2] << 8) | trns_data[3]) & 0xFF
+            b_ = ((trns_data[4] << 8) | trns_data[5]) & 0xFF
+            info["transparency"] = (r, g, b_)
+        elif colortype == 3:  # indexed/palette
+            info["transparency"] = trns_data
+        elif colortype == 0 and len(trns_data) >= 2:  # grayscale
+            info["transparency"] = ((trns_data[0] << 8) | trns_data[1]) & 0xFF
+    return info
+
+
+def _parse_jpeg_metadata(data: bytes) -> dict:
+    """Extract JPEG EXIF data from raw bytes (APP1 marker).
+    Used by the pillow-rust fast path to populate image.info."""
+    import struct as _struct
+    info: dict = {}
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return info
+    i = 2
+    while i + 3 < len(data):
+        if data[i] != 0xFF:
+            break
+        marker = data[i + 1]
+        if marker == 0xDA:  # SOS - no more metadata
+            break
+        if i + 4 > len(data):
+            break
+        length = _struct.unpack(">H", data[i + 2 : i + 4])[0]
+        seg_end = i + 2 + length
+        if seg_end > len(data):
+            break
+        seg = data[i + 4 : seg_end]
+        if marker == 0xE1 and seg[:6] == b"Exif\x00\x00":  # APP1 EXIF
+            info["exif"] = seg
+        i = seg_end
+    return info
+
+
+def _inject_png_exif(png_data: bytes, exif_bytes: bytes) -> bytes:
+    """Insert an eXIf chunk into PNG bytes (before IEND)."""
+    import struct as _struct, zlib as _zlib
+    # eXIf chunk stores raw TIFF bytes — strip Exif header if present
+    if exif_bytes[:6] == b"Exif\x00\x00":
+        exif_bytes = exif_bytes[6:]
+    chunk_type = b"eXIf"
+    crc = _zlib.crc32(chunk_type + exif_bytes) & 0xFFFFFFFF
+    chunk = (
+        _struct.pack(">I", len(exif_bytes))
+        + chunk_type
+        + exif_bytes
+        + _struct.pack(">I", crc)
+    )
+    # Insert before the IEND chunk (find IEND length prefix at offset -12 from IEND type)
+    iend_type_pos = png_data.rfind(b"IEND")
+    if iend_type_pos >= 4:
+        insert_pos = iend_type_pos - 4
+        return png_data[:insert_pos] + chunk + png_data[insert_pos:]
+    return png_data + chunk
+
+
+def _inject_jpeg_exif(jpeg_data: bytes, exif_bytes: bytes) -> bytes:
+    """Insert an APP1 EXIF marker into JPEG bytes (after SOI)."""
+    import struct as _struct
+    if not exif_bytes.startswith(b"Exif\x00\x00"):
+        exif_bytes = b"Exif\x00\x00" + exif_bytes
+    app1_length = 2 + len(exif_bytes)  # length field includes itself
+    app1 = b"\xff\xe1" + _struct.pack(">H", app1_length) + exif_bytes
+    return jpeg_data[:2] + app1 + jpeg_data[2:]
+
+
 def open(
     fp: StrOrBytesPath | IO[bytes],
     mode: Literal["r"] = "r",
@@ -3577,25 +3748,54 @@ def open(
     _fp_path = fp
     if hasattr(_fp_path, "__fspath__"):
         _fp_path = os.fspath(_fp_path)
-    if isinstance(_fp_path, (str, bytes)) and formats is None:
+    if formats is None:
+        _fast_data: bytes | None = None
         try:
-            with builtins.open(_fp_path, "rb") as _f:
-                _data = _f.read()
-            _im_handle = core.open_from_bytes(_data)
-            image = Image()
-            image.im = _im_handle
-            image._im = _im_handle
-            image._mode = _im_handle.mode
-            image._size = _im_handle.size
-            image.format = None
-            image.format_description = None
-            image.info = {}
-            image._exif = None
-            image.fp = None
-            image.readonly = 1
-            return image
+            if isinstance(_fp_path, (str, bytes)):
+                with builtins.open(_fp_path, "rb") as _f:
+                    _fast_data = _f.read()
+            elif hasattr(_fp_path, "read"):
+                # File-like object: seek to 0, read all bytes
+                if hasattr(_fp_path, "seek"):
+                    _fp_path.seek(0)
+                _fast_data = _fp_path.read()
         except Exception:
-            pass  # fall through to original logic
+            _fast_data = None
+        if _fast_data is not None:
+            try:
+                # GIF files have their own plugin that preserves P mode and palette;
+                # skip the fast path so GifImagePlugin handles them properly.
+                if _fast_data[:6] in (b"GIF87a", b"GIF89a"):
+                    raise RuntimeError("defer to GIF plugin")
+                # Palette-indexed PNGs (colortype 3) must be handled by PngImagePlugin
+                # to preserve palette and apply tRNS transparency correctly.
+                if (
+                    _fast_data[:8] == b"\x89PNG\r\n\x1a\n"
+                    and len(_fast_data) >= 29
+                    and _fast_data[25] == 3
+                ):
+                    raise RuntimeError("defer palette PNG to plugin")
+                _im_handle = core.open_from_bytes(_fast_data)
+                image = Image()
+                image.im = _im_handle
+                image._im = _im_handle
+                image._mode = _im_handle.mode
+                image._size = _im_handle.size
+                image.format = None
+                image.format_description = None
+                # Parse format-specific metadata from raw bytes
+                if _fast_data[:8] == b"\x89PNG\r\n\x1a\n":
+                    image.info = _parse_png_metadata(_fast_data)
+                elif _fast_data[:2] == b"\xff\xd8":
+                    image.info = _parse_jpeg_metadata(_fast_data)
+                else:
+                    image.info = {}
+                image._exif = None
+                image.fp = None
+                image.readonly = 1
+                return image
+            except Exception:
+                pass  # fall through to original logic
     # --- end pillow-rust fast path ---
 
     if mode != "r":
