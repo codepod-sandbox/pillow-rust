@@ -9,8 +9,7 @@ Follows the pattern from numpy-rust/tests/numpy_compat/run_compat.py:
 Usage:
     python run_compat.py [--verbose] [--ci]
 
-    Or integrated via the existing test infrastructure — add compat modules
-    to tests/python/run_all.py.
+    Or integrated via the existing test infrastructure.
 """
 
 import sys
@@ -32,18 +31,10 @@ if _this_dir not in sys.path:
 if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
-# Import our pytest shim if running standalone (not via run_all.py)
+# Import our pytest shim if running standalone (not via pytest)
 if "pytest" not in sys.modules:
-    try:
-        import pytest_shim
-        sys.modules["pytest"] = pytest_shim
-    except ImportError:
-        # Try from parent tests/python/ directory
-        _python_test_dir = os.path.join(_parent_dir, "python")
-        if _python_test_dir not in sys.path:
-            sys.path.insert(0, _python_test_dir)
-        import pytest_shim
-        sys.modules["pytest"] = pytest_shim
+    import pytest_shim
+    sys.modules["pytest"] = pytest_shim
 
 # Make pillow_compat a proper package so relative imports work
 import types as _types

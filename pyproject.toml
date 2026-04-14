@@ -8,5 +8,5 @@ python-source = "python"
 module-name = "PIL._imaging"
 
 [tool.pytest.ini_options]
-testpaths = ["tests/pillow_upstream"]
+testpaths = ["tests/pillow_upstream", "tests/pillow_compat"]
 pythonpath = ["python"]
