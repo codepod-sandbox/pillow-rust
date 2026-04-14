@@ -185,14 +185,48 @@ fn open_from_bytes(data: &[u8]) -> PyResult<imaging_core::ImagingCore> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (im, format, **_kwargs))]
+#[pyo3(signature = (frames, delays_ms, loop_count=0))]
+fn gif_save_animated<'py>(
+    frames: Vec<PyRef<'_, imaging_core::ImagingCore>>,
+    delays_ms: Vec<u32>,
+    loop_count: u16,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+    let handles: Vec<&pil_rust_core::ImageHandle> = frames.iter().map(|f| &f.handle).collect();
+    let data = pil_rust_core::gif_save_animated(&handles, &delays_ms, loop_count)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(pyo3::types::PyBytes::new(py, &data))
+}
+
+#[pyfunction]
+fn gif_decode_frame(data: &[u8], frame_idx: usize) -> PyResult<imaging_core::ImagingCore> {
+    let handle = pil_rust_core::gif_decode_frame(data, frame_idx)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
+}
+
+#[pyfunction]
+fn gif_frame_count(data: &[u8]) -> PyResult<usize> {
+    pil_rust_core::gif_frame_count(data)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+#[pyo3(signature = (im, format, **kwargs))]
 fn save_to_bytes<'py>(
     im: &imaging_core::ImagingCore,
     format: &str,
-    _kwargs: Option<&Bound<'py, pyo3::types::PyDict>>,
+    kwargs: Option<&Bound<'py, pyo3::types::PyDict>>,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
-    let data = pil_rust_core::save(&im.handle, &format.to_ascii_lowercase())
+    // Extract quality from kwargs (used for JPEG)
+    let quality: Option<u8> = kwargs.and_then(|kw| {
+        kw.get_item("quality")
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract::<u8>().ok())
+    });
+    let data = pil_rust_core::save_with_options(&im.handle, &format.to_ascii_lowercase(), quality)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Ok(pyo3::types::PyBytes::new(py, &data))
 }
@@ -326,6 +360,9 @@ fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(linear_gradient, m)?)?;
     m.add_function(wrap_pyfunction!(radial_gradient, m)?)?;
     m.add_function(wrap_pyfunction!(open_from_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(gif_save_animated, m)?)?;
+    m.add_function(wrap_pyfunction!(gif_decode_frame, m)?)?;
+    m.add_function(wrap_pyfunction!(gif_frame_count, m)?)?;
     m.add_function(wrap_pyfunction!(save_to_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(path, m)?)?;
     m.add_function(wrap_pyfunction!(new_block, m)?)?;

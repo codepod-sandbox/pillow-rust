@@ -94,6 +94,152 @@ pub fn open(bytes: &[u8]) -> Result<ImageHandle> {
     })
 }
 
+/// Decode a specific frame from an animated GIF (0-indexed).
+/// Returns the frame as an RGBA image.
+pub fn gif_decode_frame(bytes: &[u8], frame_idx: usize) -> Result<ImageHandle> {
+    use image::codecs::gif::GifDecoder;
+    use image::AnimationDecoder;
+    let cursor = Cursor::new(bytes);
+    let decoder = GifDecoder::new(cursor)?;
+    let frames: Vec<_> = decoder
+        .into_frames()
+        .collect::<std::result::Result<_, _>>()?;
+    let frame = frames
+        .into_iter()
+        .nth(frame_idx)
+        .ok_or_else(|| PilError::InvalidOperation(format!("GIF frame {frame_idx} out of range")))?;
+    let rgba = frame.into_buffer();
+    Ok(ImageHandle {
+        inner: DynamicImage::ImageRgba8(rgba),
+        mode_override: None,
+        palette: None,
+        palette_mode: None,
+    })
+}
+
+/// Return the number of frames in an animated GIF.
+pub fn gif_frame_count(bytes: &[u8]) -> Result<usize> {
+    use image::codecs::gif::GifDecoder;
+    use image::AnimationDecoder;
+    let cursor = Cursor::new(bytes);
+    let decoder = GifDecoder::new(cursor)?;
+    Ok(decoder.into_frames().count())
+}
+
+/// Encode a list of RGBA frame handles as an animated GIF.
+/// `delays_ms`: per-frame delay in milliseconds (or a single value repeated).
+/// `loop_count`: 0 = infinite, N = loop N times.
+/// Build a 256-entry grayscale global color table: entry i = (i, i, i).
+fn grayscale_palette_256() -> Vec<u8> {
+    let mut pal = Vec::with_capacity(256 * 3);
+    for i in 0u8..=255 {
+        pal.push(i);
+        pal.push(i);
+        pal.push(i);
+    }
+    pal
+}
+
+/// Check whether every frame is a grayscale (Luma8) image.
+fn all_luma8(frames: &[&ImageHandle]) -> bool {
+    frames
+        .iter()
+        .all(|h| matches!(h.inner, DynamicImage::ImageLuma8(_)))
+}
+
+pub fn gif_save_animated(
+    frames: &[&ImageHandle],
+    delays_ms: &[u32],
+    loop_count: u16,
+) -> Result<Vec<u8>> {
+    // When all frames are grayscale (L-mode), write with a fixed 256-colour
+    // grayscale palette so that palette-index == pixel value.  This matches
+    // real Pillow behaviour for "1" and "L" mode images and lets callers
+    // round-trip getpixel correctly.
+    if all_luma8(frames) {
+        return gif_save_animated_luma(frames, delays_ms, loop_count);
+    }
+
+    use image::codecs::gif::{GifEncoder, Repeat};
+    use image::Frame;
+    let mut buf = Cursor::new(Vec::new());
+    let repeat = if loop_count == 0 {
+        Repeat::Infinite
+    } else {
+        Repeat::Finite(loop_count)
+    };
+    let mut encoder = GifEncoder::new_with_speed(&mut buf, 10);
+    encoder.set_repeat(repeat)?;
+    for (i, handle) in frames.iter().enumerate() {
+        let delay_ms = delays_ms.get(i).copied().unwrap_or(100);
+        // GIF delay is in 10ms units
+        let delay = image::Delay::from_numer_denom_ms(delay_ms, 1);
+        let rgba = handle.inner.to_rgba8();
+        let frame = Frame::from_parts(rgba, 0, 0, delay);
+        encoder.encode_frame(frame)?;
+    }
+    drop(encoder);
+    Ok(buf.into_inner())
+}
+
+/// Encode grayscale frames with a fixed 256-entry grayscale global colour
+/// table so that palette index n == grey level n.
+fn gif_save_animated_luma(
+    frames: &[&ImageHandle],
+    delays_ms: &[u32],
+    loop_count: u16,
+) -> Result<Vec<u8>> {
+    use gif::{Encoder as GifRawEncoder, ExtensionData, Frame as GifFrame, Repeat};
+
+    let palette = grayscale_palette_256();
+    let (width, height) = if let Some(h) = frames.first() {
+        (h.inner.width() as u16, h.inner.height() as u16)
+    } else {
+        return Ok(Vec::new());
+    };
+
+    let mut buf = Cursor::new(Vec::new());
+    {
+        let mut encoder = GifRawEncoder::new(&mut buf, width, height, &palette)
+            .map_err(|e| PilError::InvalidOperation(e.to_string()))?;
+        // Set loop count
+        let repeat = if loop_count == 0 {
+            Repeat::Infinite
+        } else {
+            Repeat::Finite(loop_count)
+        };
+        encoder
+            .set_repeat(repeat)
+            .map_err(|e| PilError::InvalidOperation(e.to_string()))?;
+
+        for (i, handle) in frames.iter().enumerate() {
+            let delay_cs = delays_ms.get(i).copied().unwrap_or(100) / 10; // ms→centiseconds
+            let luma = handle.inner.to_luma8();
+            let pixels: Vec<u8> = luma.pixels().map(|p| p.0[0]).collect();
+            let frame = GifFrame {
+                width,
+                height,
+                buffer: std::borrow::Cow::Owned(pixels),
+                delay: delay_cs as u16,
+                ..GifFrame::default()
+            };
+            // Write GCE (graphic control extension) with the delay
+            encoder
+                .write_extension(ExtensionData::new_control_ext(
+                    delay_cs as u16,
+                    gif::DisposalMethod::Any,
+                    false,
+                    None,
+                ))
+                .map_err(|e| PilError::InvalidOperation(e.to_string()))?;
+            encoder
+                .write_frame(&frame)
+                .map_err(|e| PilError::InvalidOperation(e.to_string()))?;
+        }
+    }
+    Ok(buf.into_inner())
+}
+
 pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<ImageHandle> {
     let img = match mode {
         "RGB" => {
@@ -280,6 +426,11 @@ pub fn save_with_options(
             let rgb = handle.inner.to_rgb8();
             let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q);
             rgb.write_with_encoder(encoder)?;
+        }
+        "gif" => {
+            // image-rs GIF encoder requires RGBA8 (it quantizes internally)
+            let rgba = DynamicImage::ImageRgba8(handle.inner.to_rgba8());
+            rgba.write_to(&mut buf, image::ImageFormat::Gif)?;
         }
         _ => {
             let fmt = parse_format(format)?;

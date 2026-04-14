@@ -1173,7 +1173,13 @@ class Image:
         # but only when dirty — don't overwrite an explicitly-set ImagingCore palette
         # (e.g. remap_palette uses putpalette("RGB;L") directly on ImagingCore).
         if self.mode in ("P", "PA") and self.palette and self.palette.dirty:
-            self.im.putpalette(self.palette.tobytes(), self.palette.mode)
+            if self.palette.rawmode:
+                _pal_bytes = bytes(self.palette.palette)
+                _pal_mode = self.palette.rawmode
+            else:
+                _pal_bytes = self.palette.tobytes()
+                _pal_mode = self.palette.mode
+            self.im.putpalette(_pal_bytes, _pal_mode)
 
         try:
             im = self.im.convert(mode, dither)
@@ -2636,10 +2642,121 @@ class Image:
                 if _ext2:
                     _fast_fmt = _ext2.upper()
                     _fast_target = fp
-        if _fast_fmt and _fast_target is not None:
+        # Animated GIF save via Rust: collect all frames and encode together.
+        # Also trigger for single-frame GIFs with timing/loop metadata so those
+        # attributes are preserved (image-rs GIF encoder writes the GCE block).
+        _is_animated_save = params.get("save_all") or params.get("append_images")
+        _gif_with_meta = _fast_fmt in ("GIF",) and (
+            any(k in params for k in ("duration", "loop", "comment"))
+            or bool(self.info.get("comment"))
+        )
+        if _fast_fmt in ("GIF",) and (_is_animated_save or _gif_with_meta) and _fast_target is not None:
+            try:
+                self.load()
+                _append_imgs = list(params.get("append_images") or [])
+
+                def _expand_frames(img: "Image") -> "tuple[list[Image], list[int]]":
+                    """Return (frames, per_frame_durations) for all frames of img."""
+                    if not hasattr(img, "n_frames") or img.n_frames <= 1:
+                        _d = int(img.info.get("duration", 0))
+                        return [img], [_d]
+                    _cur = img.tell() if hasattr(img, "tell") else 0
+                    _frs: list["Image"] = []
+                    _durs: list[int] = []
+                    for _fi in range(img.n_frames):
+                        img.seek(_fi)
+                        _frs.append(img.copy())
+                        _durs.append(int(img.info.get("duration", 0)))
+                    img.seek(_cur)
+                    return _frs, _durs
+
+                if params.get("save_all"):
+                    # Include all frames of source + all frames of each append image
+                    _all_frames, _frame_durations = _expand_frames(self)
+                    for _ai in _append_imgs:
+                        _ai_frames, _ai_durs = _expand_frames(_ai)
+                        _all_frames.extend(_ai_frames)
+                        _frame_durations.extend(_ai_durs)
+                else:
+                    # No save_all: just source (current frame) + first frame of each append
+                    _all_frames = [self] + _append_imgs
+                    _frame_durations = [int(self.info.get("duration", 0))] + [
+                        int(_ai.info.get("duration", 0)) for _ai in _append_imgs
+                    ]
+                _duration = params.get("duration")
+                _loop = params.get("loop", self.info.get("loop", 0))
+                _delays: list[int] = []
+                if _duration is not None:
+                    if isinstance(_duration, (list, tuple)):
+                        _delays = [int(d) for d in _duration]
+                    else:
+                        _delays = [int(_duration)] * len(_all_frames)
+                else:
+                    # Use per-frame durations; fall back to global default of 100ms
+                    _delays = [d if d > 0 else 100 for d in _frame_durations]
+                # Canvas size is the first frame's size
+                _canvas_size = _all_frames[0].size if _all_frames else self.size
+                _frame_handles = []
+                for _f in _all_frames:
+                    _f.load()
+                    # GIF doesn't support 1-bit; convert to L (grayscale) like real Pillow
+                    if _f.mode == "1":
+                        _f = _f.convert("L")
+                        _f.load()
+                    # Resize frames that don't match the canvas size
+                    if _f.size != _canvas_size:
+                        _f = _f.resize(_canvas_size, resample=LANCZOS)
+                        _f.load()
+                    _frame_handles.append(_f.im)
+                _data = core.gif_save_animated(_frame_handles, _delays, int(_loop))
+                # Patch background color index in GIF logical screen descriptor (byte 11)
+                _bg = params.get("background", self.info.get("background"))
+                if isinstance(_bg, int) and len(_data) >= 12:
+                    _data = _data[:11] + bytes([_bg & 0xFF]) + _data[12:]
+                # Inject GIF comment extension if requested.
+                # Explicit comment="" suppresses any comment from self.info.
+                if "comment" in params:
+                    _comment: bytes | None = params["comment"] or None
+                else:
+                    _comment = self.info.get("comment") or None  # type: ignore[assignment]
+                if _comment:
+                    _comment_bytes = (
+                        _comment.encode("latin-1", errors="replace")
+                        if isinstance(_comment, str)
+                        else bytes(_comment)
+                    )
+                    _data = _inject_gif_comment(_data, _comment_bytes)
+                if isinstance(_fast_target, (str, bytes)):
+                    with builtins.open(_fast_target, "wb") as _fw:
+                        _fw.write(_data)
+                else:
+                    _fast_target.write(_data)
+                return
+            except Exception:
+                pass  # fall through to format plugin
+        if _fast_fmt and _fast_target is not None and not _is_animated_save:
             try:
                 self.load()
                 _data = core.save_to_bytes(self.im, _fast_fmt, **params)
+                # GIF version: downgrade to GIF87a unless GIF89a features are needed.
+                # Matches GifImagePlugin._get_header() logic exactly.
+                if _fast_fmt == "GIF" and _data[:6] == b"GIF89a":
+                    _needs_89a = (
+                        self.info.get("version") == b"89a"
+                        or "transparency" in self.info
+                        or params.get("transparency") is not None
+                        or params.get("loop") is not None
+                        or params.get("duration")
+                        or params.get("comment")
+                        or self.info.get("comment")
+                    )
+                    if not _needs_89a:
+                        _data = b"GIF87a" + _data[6:]
+                # Patch background color index in GIF logical screen descriptor (byte 11)
+                if _fast_fmt == "GIF":
+                    _bg = params.get("background", self.info.get("background"))
+                    if isinstance(_bg, int) and _bg != 0 and len(_data) >= 12:
+                        _data = _data[:11] + bytes([_bg & 0xFF]) + _data[12:]
                 # Inject EXIF metadata for formats that support it
                 _exif_param = params.get("exif")
                 if _exif_param is not None:
@@ -2652,6 +2769,14 @@ class Image:
                         _data = _inject_png_exif(_data, _exif_bytes)
                     elif _fast_fmt in ("JPEG", "JPG"):
                         _data = _inject_jpeg_exif(_data, _exif_bytes)
+                # Inject ICC profile for formats that support it
+                _icc_param = params.get("icc_profile")
+                if _icc_param is not None:
+                    _icc_bytes = bytes(_icc_param)
+                    if _fast_fmt in ("JPEG", "JPG"):
+                        _data = _inject_jpeg_icc(_data, _icc_bytes)
+                    elif _fast_fmt in ("PNG",):
+                        _data = _inject_png_icc(_data, _icc_bytes)
                 if isinstance(_fast_target, (str, bytes)):
                     with builtins.open(_fast_target, "wb") as _f:
                         _f.write(_data)
@@ -3725,6 +3850,58 @@ def _inject_jpeg_exif(jpeg_data: bytes, exif_bytes: bytes) -> bytes:
     app1_length = 2 + len(exif_bytes)  # length field includes itself
     app1 = b"\xff\xe1" + _struct.pack(">H", app1_length) + exif_bytes
     return jpeg_data[:2] + app1 + jpeg_data[2:]
+
+
+def _inject_gif_comment(gif_data: bytes, comment: bytes) -> bytes:
+    """Inject a GIF comment extension block into GIF bytes after the header."""
+    if not comment or len(gif_data) < 13:
+        return gif_data
+    # Build comment extension: 0x21 0xFE <sub-blocks> 0x00
+    ext = bytearray(b"\x21\xFE")
+    for i in range(0, len(comment), 255):
+        chunk = comment[i : i + 255]
+        ext.append(len(chunk))
+        ext.extend(chunk)
+    ext.append(0)  # block terminator
+    # Find insertion point: after 6-byte GIF signature + 7-byte logical screen descriptor
+    # + optional global color table
+    packed = gif_data[10]
+    has_gct = (packed >> 7) & 1
+    gct_size = packed & 0x07
+    offset = 13
+    if has_gct:
+        offset += 3 * (2 ** (gct_size + 1))
+    return gif_data[:offset] + bytes(ext) + gif_data[offset:]
+
+
+def _inject_jpeg_icc(jpeg_data: bytes, icc_bytes: bytes) -> bytes:
+    """Insert APP2 ICC_PROFILE marker(s) into JPEG bytes (after SOI)."""
+    import struct as _struct
+    # ICC profiles larger than ~64KB must be split into multiple APP2 markers
+    CHUNK_SIZE = 65519  # max payload per marker (65535 - 14 bytes header - 2 for length)
+    chunks = [icc_bytes[i:i + CHUNK_SIZE] for i in range(0, len(icc_bytes), CHUNK_SIZE)]
+    total = len(chunks)
+    app2_blocks = b""
+    for seq, chunk in enumerate(chunks, 1):
+        header = b"ICC_PROFILE\x00" + bytes([seq, total])
+        payload = header + chunk
+        app2_blocks += b"\xff\xe2" + _struct.pack(">H", 2 + len(payload)) + payload
+    return jpeg_data[:2] + app2_blocks + jpeg_data[2:]
+
+
+def _inject_png_icc(png_data: bytes, icc_bytes: bytes) -> bytes:
+    """Insert an iCCP chunk into PNG bytes (after IHDR)."""
+    import struct as _struct, zlib as _zlib
+    # iCCP chunk: profile name + null + compression method (0) + compressed profile
+    profile_name = b"ICC Profile"
+    compressed = _zlib.compress(icc_bytes)
+    data = profile_name + b"\x00\x00" + compressed
+    chunk_type = b"iCCP"
+    crc = _zlib.crc32(chunk_type + data) & 0xFFFFFFFF
+    chunk = _struct.pack(">I", len(data)) + chunk_type + data + _struct.pack(">I", crc)
+    # Insert after the IHDR chunk (PNG sig=8 bytes, IHDR=4+4+13+4=25 bytes → offset 33)
+    ihdr_end = 33
+    return png_data[:ihdr_end] + chunk + png_data[ihdr_end:]
 
 
 def open(

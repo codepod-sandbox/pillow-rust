@@ -439,17 +439,28 @@ class GifImageFile(ImageFile.ImageFile):
         return super().load()
 
     def _load_via_imagers(self) -> Image.core.PixelAccess | None:
-        """Fallback GIF loader: decode via image-rs, reconstruct P-mode from palette."""
+        """Fallback GIF loader: decode via image-rs per-frame animation decoder."""
         assert self.fp is not None
         self.fp.seek(0)
         data = self.fp.read()
 
-        # Decode to RGBA using image-rs
-        rgba_handle = Image.core.open_from_bytes(data)
+        # Determine which frame to decode (name-mangled __frame attribute)
+        frame_idx = getattr(self, "_GifImageFile__frame", 0)
+
+        # Decode the specific frame to RGBA using image-rs animation decoder
+        try:
+            rgba_handle = Image.core.gif_decode_frame(data, frame_idx)
+        except Exception:
+            try:
+                # Fall back to frame 0 if the requested frame is out of range
+                rgba_handle = Image.core.gif_decode_frame(data, 0)
+            except Exception:
+                # Last resort: open_from_bytes (frame 0 only, no animation support)
+                rgba_handle = Image.core.open_from_bytes(data)
         rgba_bytes = rgba_handle.tobytes()  # RGBA bytes
         w, h = self.size
 
-        # Build RGB → palette-index reverse map
+        # Build RGB → palette-index reverse map (for P-mode GIFs)
         pal = self.palette
         if pal is not None:
             pal_bytes = bytes(pal.palette)
@@ -466,21 +477,29 @@ class GifImageFile(ImageFile.ImageFile):
                 r, g, b = rgba_bytes[i * 4], rgba_bytes[i * 4 + 1], rgba_bytes[i * 4 + 2]
                 indices[i] = rgb_to_idx.get((r, g, b), 0)
         else:
-            # L mode: use raw luma values
+            # L mode: use luma channel
             indices = bytearray(w * h)
             for i in range(w * h):
                 indices[i] = rgba_bytes[i * 4]
 
-        # Build the ImagingCore for this image
+        # Build the ImagingCore for this frame
         mode = "P" if pal is not None else "L"
         self.im = Image.core.new(mode, self.size)
         self.im.frombytes(bytes(indices))
         if pal is not None:
-            mode_str, pal_data = pal.getdata()
-            self.im.putpalette(mode_str, mode_str, pal_data)
+            if pal.rawmode:
+                # Raw palette bytes (e.g. from PNG PLTE chunk) — use directly
+                pal_data = bytes(pal.palette)
+                pal_mode = pal.rawmode
+            else:
+                pal_mode, pal_data = pal.getdata()
+            self.im.putpalette(pal_mode, pal_mode, pal_data)
         self._mode = mode
 
-        # Clear tile and call load_end for any post-processing
+        # Set _prev_im so load_end() doesn't crash for non-zero frames
+        if not hasattr(self, "_prev_im"):
+            self._prev_im = None
+
         self.tile = []
         self.load_end()
         return self.im.pixel_access(self.readonly)
