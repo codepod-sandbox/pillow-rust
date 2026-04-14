@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "pre-push: building pil-python"
-cargo build -p pil-rust-wasm
+echo "pre-push: building pil-imaging"
+maturin develop -q
 
 echo "pre-push: running pytest"
-target/debug/pil-python -m pytest tests/python/
+uv run pytest tests/pillow_upstream/ -q --tb=no
