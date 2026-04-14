@@ -1,6 +1,21 @@
 use pil_rust_core::ImageHandle;
 use pyo3::prelude::*;
 
+fn extract_palette_bytes(data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(b) = data.extract::<Vec<u8>>() {
+        return Ok(b);
+    }
+    if let Ok(b) = data.extract::<&[u8]>() {
+        return Ok(b.to_vec());
+    }
+    if let Ok(ints) = data.extract::<Vec<i32>>() {
+        return Ok(ints.into_iter().map(|v| v.clamp(0, 255) as u8).collect());
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "putpalette: data must be bytes or list of ints",
+    ))
+}
+
 /// Extract a scalar f32 from a Python value that is either a float/int or a (x, y) tuple.
 /// For tuples, returns the first element (x-radius).
 fn extract_scalar_or_first_of_tuple(v: &Bound<'_, PyAny>) -> Option<f32> {
@@ -69,7 +84,7 @@ impl ImagingCore {
                 .into_any()
                 .unbind(),
             "L" | "P" => (px[0] as i32).into_pyobject(py)?.into_any().unbind(),
-            "LA" | "PA" => (px[0] as i32, px[3] as i32)
+            "LA" | "La" | "PA" => (px[0] as i32, px[3] as i32)
                 .into_pyobject(py)?
                 .into_any()
                 .unbind(),
@@ -77,6 +92,11 @@ impl ImagingCore {
                 .into_pyobject(py)?
                 .into_any()
                 .unbind(),
+            "I" | "F" | "I;16" | "I;16B" | "I;16L" | "I;16N" => {
+                // 16-bit stored as [lo, hi, 0, 255] — reconstruct the u16 value
+                let v = (px[0] as u32) | ((px[1] as u32) << 8);
+                (v as i32).into_pyobject(py)?.into_any().unbind()
+            }
             _ => (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32)
                 .into_pyobject(py)?
                 .into_any()
@@ -545,10 +565,14 @@ impl ImagingCore {
                 .into_pyobject(py)?
                 .into_any()
                 .unbind(),
-            "RGBa" => (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32)
+            "RGBa" | "CMYK" | "RGBX" => (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32)
                 .into_pyobject(py)?
                 .into_any()
                 .unbind(),
+            "I" | "F" | "I;16" | "I;16B" | "I;16L" | "I;16N" => {
+                let v = (px[0] as u32) | ((px[1] as u32) << 8);
+                (v as i32).into_pyobject(py)?.into_any().unbind()
+            }
             _ => (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32)
                 .into_pyobject(py)?
                 .into_any()
@@ -611,19 +635,45 @@ impl ImagingCore {
         // Pillow uses & 0xFF (wrap-around), applying scale+offset first
         let apply_scale = |v: f64| -> u8 { ((v * scale + offset) as i64 & 0xFF) as u8 };
 
-        // Accept bytes, bytearray, or sequence of ints/floats/tuples
-        if let Ok(bytes) = data.extract::<Vec<u8>>() {
+        let mode = pil_rust_core::mode(&self.handle).to_owned();
+        let is_16bit = matches!(
+            mode.as_str(),
+            "I" | "F" | "I;16" | "I;16L" | "I;16B" | "I;16N"
+        );
+
+        // Accept bytes, bytearray, or sequence of ints/floats/tuples.
+        // Handle 16-bit modes first to avoid the Vec<u8> branch eating small ints.
+        if is_16bit {
+            let apply_16 =
+                |v: f64| -> u16 { ((v * scale + offset).round() as i64).clamp(0, 0xFFFF) as u16 };
+            let bytes: Vec<u8> = if let Ok(seq) = data.extract::<Vec<i64>>() {
+                seq.into_iter()
+                    .flat_map(|v| apply_16(v as f64).to_le_bytes())
+                    .collect()
+            } else if let Ok(seq) = data.extract::<Vec<i32>>() {
+                seq.into_iter()
+                    .flat_map(|v| apply_16(v as f64).to_le_bytes())
+                    .collect()
+            } else if let Ok(seq) = data.extract::<Vec<f64>>() {
+                seq.into_iter()
+                    .flat_map(|v| apply_16(v).to_le_bytes())
+                    .collect()
+            } else {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "putdata: unsupported data type for 16-bit mode",
+                ));
+            };
+            pil_rust_core::putdata_16bit(&mut self.handle, &bytes);
+        } else if let Ok(bytes) = data.extract::<Vec<u8>>() {
             if scale == 1.0 && offset == 0.0 {
                 pil_rust_core::putdata(&mut self.handle, &bytes);
             } else {
                 let scaled: Vec<u8> = bytes.into_iter().map(|v| apply_scale(v as f64)).collect();
                 pil_rust_core::putdata(&mut self.handle, &scaled);
             }
-        } else if let Ok(seq) = data.extract::<Vec<f64>>() {
-            let bytes: Vec<u8> = seq.into_iter().map(apply_scale).collect();
-            pil_rust_core::putdata(&mut self.handle, &bytes);
-        } else if let Ok(seq) = data.extract::<Vec<i32>>() {
-            let bytes: Vec<u8> = seq.into_iter().map(|v| apply_scale(v as f64)).collect();
+        } else if let Ok(seq) = data.extract::<Vec<(u8, u8)>>() {
+            // 2-tuple modes: LA, Pa — flat bytes [L, A, L, A, ...]
+            let bytes: Vec<u8> = seq.into_iter().flat_map(|(a, b)| [a, b]).collect();
             pil_rust_core::putdata(&mut self.handle, &bytes);
         } else if let Ok(seq) = data.extract::<Vec<(u8, u8, u8)>>() {
             let bytes: Vec<u8> = seq.into_iter().flat_map(|(r, g, b)| [r, g, b]).collect();
@@ -633,6 +683,12 @@ impl ImagingCore {
                 .into_iter()
                 .flat_map(|(r, g, b, a)| [r, g, b, a])
                 .collect();
+            pil_rust_core::putdata(&mut self.handle, &bytes);
+        } else if let Ok(seq) = data.extract::<Vec<f64>>() {
+            let bytes: Vec<u8> = seq.into_iter().map(apply_scale).collect();
+            pil_rust_core::putdata(&mut self.handle, &bytes);
+        } else if let Ok(seq) = data.extract::<Vec<i32>>() {
+            let bytes: Vec<u8> = seq.into_iter().map(|v| apply_scale(v as f64)).collect();
             pil_rust_core::putdata(&mut self.handle, &bytes);
         } else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -722,42 +778,67 @@ impl ImagingCore {
 
     #[pyo3(signature = (mode=None, rawmode=None))]
     fn getpalette(&self, mode: Option<&str>, rawmode: Option<&str>) -> PyResult<Vec<u8>> {
-        let _ = (mode, rawmode);
-        Err(pyo3::exceptions::PyValueError::new_err(
-            "image has no palette",
-        ))
+        let out_mode = rawmode.or(mode).unwrap_or("RGB");
+        pil_rust_core::getpalette(&self.handle, out_mode)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     fn getpalettemode(&self) -> PyResult<String> {
-        Err(pyo3::exceptions::PyValueError::new_err(
-            "image has no palette",
-        ))
+        pil_rust_core::getpalettemode(&self.handle)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
-    #[pyo3(signature = (data, rawmode=None, src_rawmode=None))]
+    /// Two calling conventions used by Pillow:
+    ///   im.putpalette(palette_mode, rawmode, data)  -- from Image.load()
+    ///   im.putpalette(data, rawmode)                -- direct user calls
+    /// We detect which by checking whether the first arg is a string or bytes.
+    #[pyo3(signature = (arg1, arg2=None, arg3=None))]
     fn putpalette(
         &mut self,
-        data: &Bound<'_, PyAny>,
-        rawmode: Option<&str>,
-        src_rawmode: Option<&Bound<'_, PyAny>>,
+        arg1: &Bound<'_, PyAny>,
+        arg2: Option<&Bound<'_, PyAny>>,
+        arg3: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        let _ = (data, rawmode, src_rawmode);
-        // Palette images not supported; silently ignore so as not to crash
+        let (data_mode, bytes) = if let Ok(mode_str) = arg1.extract::<String>() {
+            // Called as putpalette(palette_mode, rawmode, data)
+            let data = arg3.or(arg2).ok_or_else(|| {
+                pyo3::exceptions::PyTypeError::new_err("putpalette: missing data")
+            })?;
+            let bytes = extract_palette_bytes(data)?;
+            (mode_str, bytes)
+        } else {
+            // Called as putpalette(data, rawmode)
+            let bytes = extract_palette_bytes(arg1)?;
+            let mode_str = arg2
+                .and_then(|a| a.extract::<String>().ok())
+                .unwrap_or_else(|| "RGB".to_string());
+            (mode_str, bytes)
+        };
+        pil_rust_core::putpalette(&mut self.handle, &bytes, &data_mode);
+        // Ensure mode_override is P or PA
+        if self.handle.mode_override.is_none() || self.handle.mode_override == Some("L") {
+            self.handle.mode_override = Some("P");
+        }
         Ok(())
     }
 
     fn putpalettealpha(&mut self, index: i32, alpha: i32) -> PyResult<()> {
-        let _ = (index, alpha);
-        Err(pyo3::exceptions::PyValueError::new_err(
-            "image has no palette",
-        ))
+        pil_rust_core::putpalettealpha(&mut self.handle, index as usize, alpha.clamp(0, 255) as u8)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     fn putpalettealphas(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        let _ = data;
-        Err(pyo3::exceptions::PyValueError::new_err(
-            "image has no palette",
-        ))
+        let bytes: Vec<u8> = if let Ok(b) = data.extract::<Vec<u8>>() {
+            b
+        } else if let Ok(ints) = data.extract::<Vec<i32>>() {
+            ints.into_iter().map(|v| v.clamp(0, 255) as u8).collect()
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "putpalettealphas: data must be bytes or list of ints",
+            ));
+        };
+        pil_rust_core::putpalettealphas(&mut self.handle, &bytes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     // Upstream calling convention: im.transform(box, source_im, method, data, resample, fill)

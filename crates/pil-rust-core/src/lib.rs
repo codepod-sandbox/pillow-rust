@@ -1,5 +1,5 @@
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
-use image::{DynamicImage, GenericImage, GenericImageView, ImageBuffer, ImageFormat};
+use image::{DynamicImage, GenericImage, GenericImageView, ImageBuffer, ImageFormat, Luma};
 use std::io::Cursor;
 
 // ---------------------------------------------------------------------------
@@ -18,7 +18,7 @@ impl std::fmt::Display for PilError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PilError::Image(e) => write!(f, "{e}"),
-            PilError::UnsupportedMode(m) => write!(f, "unsupported mode: {m}"),
+            PilError::UnsupportedMode(m) => write!(f, "unrecognized image mode: {m}"),
             PilError::UnsupportedFormat(s) => write!(f, "unsupported format: {s}"),
             PilError::InvalidOperation(s) => write!(f, "{s}"),
         }
@@ -42,6 +42,31 @@ pub type Result<T> = std::result::Result<T, PilError>;
 pub struct ImageHandle {
     pub inner: DynamicImage,
     pub mode_override: Option<&'static str>,
+    /// Flat palette bytes: 256 entries × 3 (RGB) or 4 (RGBA) bytes.
+    pub palette: Option<Vec<u8>>,
+    /// Mode of the stored palette bytes: "RGB" or "RGBA".
+    pub palette_mode: Option<String>,
+}
+
+impl ImageHandle {
+    /// Construct with no palette (the common case).
+    pub fn new(inner: DynamicImage) -> Self {
+        Self {
+            inner,
+            mode_override: None,
+            palette: None,
+            palette_mode: None,
+        }
+    }
+    /// Construct with a mode override and no palette.
+    pub fn with_mode(inner: DynamicImage, mode: &'static str) -> Self {
+        Self {
+            inner,
+            mode_override: Some(mode),
+            palette: None,
+            palette_mode: None,
+        }
+    }
 }
 
 impl Clone for ImageHandle {
@@ -49,6 +74,8 @@ impl Clone for ImageHandle {
         Self {
             inner: self.inner.clone(),
             mode_override: self.mode_override,
+            palette: self.palette.clone(),
+            palette_mode: self.palette_mode.clone(),
         }
     }
 }
@@ -62,6 +89,8 @@ pub fn open(bytes: &[u8]) -> Result<ImageHandle> {
     Ok(ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
 }
 
@@ -95,6 +124,134 @@ pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<Im
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageLuma8(buf),
                 mode_override: Some("1"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        "P" => {
+            // Palette mode: pixels are indices (0-255); store as Luma8.
+            // Palette is empty until putpalette() is called.
+            let idx = color.first().copied().unwrap_or(0);
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([idx]));
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLuma8(buf),
+                mode_override: Some("P"),
+                palette: Some(vec![0u8; 256 * 3]),
+                palette_mode: Some("RGB".to_string()),
+            });
+        }
+        "PA" => {
+            let idx = color.first().copied().unwrap_or(0);
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::LumaA([idx, 255]));
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLumaA8(buf),
+                mode_override: Some("PA"),
+                palette: Some(vec![0u8; 256 * 4]),
+                palette_mode: Some("RGBA".to_string()),
+            });
+        }
+        // Premultiplied-alpha modes
+        "RGBa" => {
+            let (r, g, b, a) = parse_rgba(color);
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Rgba([r, g, b, a]));
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageRgba8(buf),
+                mode_override: Some("RGBa"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        "La" => {
+            let l = color.first().copied().unwrap_or(0);
+            let a = color.get(1).copied().unwrap_or(255);
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::LumaA([l, a]));
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLumaA8(buf),
+                mode_override: Some("La"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        // RGBX: 4-channel (R, G, B, X), stored as RGBA with X in alpha channel
+        "RGBX" => {
+            let (r, g, b) = parse_rgb(color);
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Rgba([r, g, b, 0]));
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageRgba8(buf),
+                mode_override: Some("RGBX"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        // Modes stored as RGB with a mode_override tag (3 channels)
+        "YCbCr" | "HSV" | "LAB" => {
+            let (r, g, b) = parse_rgb(color);
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Rgb([r, g, b]));
+            let m: &'static str = match mode {
+                "YCbCr" => "YCbCr",
+                "HSV" => "HSV",
+                "LAB" => "LAB",
+                _ => unreachable!(),
+            };
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageRgb8(buf),
+                mode_override: Some(m),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        // CMYK: 4-channel, stored as RGBA with mode_override
+        "CMYK" => {
+            let c = color.first().copied().unwrap_or(0);
+            let m_ch = color.get(1).copied().unwrap_or(0);
+            let y = color.get(2).copied().unwrap_or(0);
+            let k = color.get(3).copied().unwrap_or(0);
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Rgba([c, m_ch, y, k]));
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageRgba8(buf),
+                mode_override: Some("CMYK"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        // F: 32-bit float, approximated as Luma16 with mode_override
+        "F" => {
+            let v = color.first().copied().unwrap_or(0) as u16;
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([v]));
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLuma16(buf),
+                mode_override: Some("F"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        // I: 32-bit signed int, stored as Luma16 (best approximation)
+        "I" => {
+            let v = color.first().copied().unwrap_or(0) as u16;
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([v]));
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLuma16(buf),
+                mode_override: Some("I"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        // I;16* variants: 16-bit
+        "I;16" | "I;16B" | "I;16L" | "I;16N" => {
+            let v = color.first().copied().unwrap_or(0) as u16;
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([v]));
+            let m: &'static str = match mode {
+                "I;16" => "I;16",
+                "I;16B" => "I;16B",
+                "I;16L" => "I;16L",
+                "I;16N" => "I;16N",
+                _ => unreachable!(),
+            };
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLuma16(buf),
+                mode_override: Some(m),
+                palette: None,
+                palette_mode: None,
             });
         }
         _ => return Err(PilError::UnsupportedMode(mode.to_string())),
@@ -102,6 +259,8 @@ pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<Im
     Ok(ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
 }
 
@@ -158,6 +317,17 @@ pub fn mode(handle: &ImageHandle) -> &'static str {
 }
 
 pub fn tobytes(handle: &ImageHandle) -> Vec<u8> {
+    // For big-endian 16-bit modes, byte-swap the raw LE u16 buffer to BE
+    if handle.mode_override == Some("I;16B") {
+        if let DynamicImage::ImageLuma16(buf) = &handle.inner {
+            let mut out = Vec::with_capacity(buf.len() * 2);
+            for px in buf.pixels() {
+                let v = px.0[0];
+                out.extend_from_slice(&v.to_be_bytes());
+            }
+            return out;
+        }
+    }
     handle.inner.as_bytes().to_vec()
 }
 
@@ -166,6 +336,13 @@ pub fn tobytes(handle: &ImageHandle) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 pub fn getpixel(handle: &ImageHandle, x: u32, y: u32) -> [u8; 4] {
+    // For 16-bit modes (I, F, I;16*), get_pixel normalises to u8 losing precision.
+    // Return the raw low byte of the 16-bit value directly.
+    if let DynamicImage::ImageLuma16(buf) = &handle.inner {
+        let v = buf.get_pixel(x, y)[0];
+        // Return low byte as [v_lo, v_hi, 0, 255] so callers can reconstruct
+        return [(v & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, 0, 255];
+    }
     let p = handle.inner.get_pixel(x, y);
     p.0
 }
@@ -182,6 +359,11 @@ pub fn putpixel(handle: &mut ImageHandle, x: u32, y: u32, color: [u8; 4]) {
         }
         DynamicImage::ImageRgb8(buf) => {
             buf.put_pixel(x, y, image::Rgb([color[0], color[1], color[2]]));
+        }
+        DynamicImage::ImageLuma16(buf) => {
+            // Reconstruct u16 from [lo, hi] bytes
+            let v = (color[0] as u16) | ((color[1] as u16) << 8);
+            buf.put_pixel(x, y, image::Luma([v]));
         }
         _ => {
             handle.inner.put_pixel(x, y, image::Rgba(color));
@@ -203,12 +385,16 @@ pub fn resize(handle: &ImageHandle, w: u32, h: u32, filter: &str) -> ImageHandle
             return ImageHandle {
                 inner: DynamicImage::ImageRgba8(resize_rgba_premult(src, w, h, f)),
                 mode_override: handle.mode_override,
+                palette: None,
+                palette_mode: None,
             };
         }
         if let DynamicImage::ImageLumaA8(ref src) = handle.inner {
             return ImageHandle {
                 inner: DynamicImage::ImageLumaA8(resize_lumaa_premult(src, w, h, f)),
                 mode_override: handle.mode_override,
+                palette: None,
+                palette_mode: None,
             };
         }
     }
@@ -216,6 +402,8 @@ pub fn resize(handle: &ImageHandle, w: u32, h: u32, filter: &str) -> ImageHandle
     ImageHandle {
         inner: handle.inner.resize_exact(w, h, f),
         mode_override: handle.mode_override,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -311,6 +499,8 @@ pub fn crop(handle: &ImageHandle, x: u32, y: u32, w: u32, h: u32) -> ImageHandle
     ImageHandle {
         inner: handle.inner.crop_imm(x, y, w, h),
         mode_override: handle.mode_override,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -323,6 +513,8 @@ pub fn crop_oob(handle: &ImageHandle, x0: i32, y0: i32, x1: i32, y1: i32) -> Ima
         return new_image(mode(handle), out_w, out_h, &[]).unwrap_or_else(|_| ImageHandle {
             inner: DynamicImage::ImageRgba8(image::RgbaImage::new(out_w, out_h)),
             mode_override: None,
+            palette: None,
+            palette_mode: None,
         });
     }
     // Create destination image in RGBA, then convert back to original mode
@@ -348,6 +540,8 @@ pub fn crop_oob(handle: &ImageHandle, x0: i32, y0: i32, x1: i32, y1: i32) -> Ima
     ImageHandle {
         inner: result,
         mode_override: handle.mode_override,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -359,24 +553,32 @@ pub fn rotate(handle: &ImageHandle, degrees: f32) -> ImageHandle {
         return ImageHandle {
             inner: handle.inner.rotate270(),
             mode_override: None,
+            palette: None,
+            palette_mode: None,
         };
     }
     if (deg - 180.0).abs() < 0.5 {
         return ImageHandle {
             inner: handle.inner.rotate180(),
             mode_override: None,
+            palette: None,
+            palette_mode: None,
         };
     }
     if (deg - 270.0).abs() < 0.5 {
         return ImageHandle {
             inner: handle.inner.rotate90(),
             mode_override: None,
+            palette: None,
+            palette_mode: None,
         };
     }
     if deg < 0.5 || (360.0 - deg) < 0.5 {
         return ImageHandle {
             inner: handle.inner.clone(),
             mode_override: None,
+            palette: None,
+            palette_mode: None,
         };
     }
 
@@ -410,6 +612,8 @@ pub fn rotate(handle: &ImageHandle, degrees: f32) -> ImageHandle {
     ImageHandle {
         inner: out,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -444,6 +648,8 @@ pub fn transpose(handle: &ImageHandle, method: u8) -> Result<ImageHandle> {
     Ok(ImageHandle {
         inner: out,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
 }
 
@@ -484,6 +690,8 @@ pub fn transform_affine(
     ImageHandle {
         inner: out,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -523,6 +731,8 @@ pub fn transform_perspective(
     ImageHandle {
         inner: out,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -590,6 +800,8 @@ pub fn convert(handle: &ImageHandle, target_mode: &str) -> Result<ImageHandle> {
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageLuma8(binary),
                 mode_override: Some("1"),
+                palette: None,
+                palette_mode: None,
             });
         }
         // Premultiplied-alpha modes: store as RGBA/LumaA with mode_override
@@ -600,6 +812,8 @@ pub fn convert(handle: &ImageHandle, target_mode: &str) -> Result<ImageHandle> {
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageRgba8(rgba),
                 mode_override: Some("RGBa"),
+                palette: None,
+                palette_mode: None,
             });
         }
         "La" => {
@@ -607,14 +821,335 @@ pub fn convert(handle: &ImageHandle, target_mode: &str) -> Result<ImageHandle> {
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageLumaA8(luma_a),
                 mode_override: Some("La"),
+                palette: None,
+                palette_mode: None,
             });
         }
-        _ => return Err(PilError::UnsupportedMode(target_mode.to_string())),
+        // ---- P / PA expansion -------------------------------------------
+        "P" => {
+            // For L-mode sources, use direct mapping: pixel value = palette index.
+            // This preserves the exact pixel values as palette indices and creates
+            // a standard grayscale palette (matches Pillow's L→P behavior).
+            if matches!(mode(handle), "L" | "1") {
+                let luma = handle.inner.to_luma8();
+                // Grayscale palette: index i → (i, i, i)
+                let mut flat_palette = Vec::with_capacity(256 * 3);
+                for i in 0u8..=255 {
+                    flat_palette.push(i);
+                    flat_palette.push(i);
+                    flat_palette.push(i);
+                }
+                return Ok(ImageHandle {
+                    inner: DynamicImage::ImageLuma8(luma),
+                    mode_override: Some("P"),
+                    palette: Some(flat_palette),
+                    palette_mode: Some("RGB".to_string()),
+                });
+            }
+            // For other sources, use quantize
+            let quantized = quantize(handle, 256)?;
+            return Ok(quantized);
+        }
+        "PA" => {
+            // P with alpha channel: quantize then wrap as LumaA8
+            let quantized = quantize(handle, 256)?;
+            let (qw, qh) = quantized.inner.dimensions();
+            let luma = quantized.inner.to_luma8();
+            let out =
+                ImageBuffer::from_fn(qw, qh, |x, y| image::LumaA([luma.get_pixel(x, y)[0], 255]));
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLumaA8(out),
+                mode_override: Some("PA"),
+                palette: quantized.palette,
+                palette_mode: quantized.palette_mode,
+            });
+        }
+        _ => {
+            // If source is P or PA, expand through palette first
+            let src_mode = mode(handle);
+            if src_mode == "P" || src_mode == "PA" {
+                let expanded = expand_palette(handle)?;
+                return convert(&expanded, target_mode);
+            }
+            // RGBX: 4-channel, stored as RGBA with X = 0 in alpha channel
+            if target_mode == "RGBX" {
+                let rgba = handle.inner.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let out = ImageBuffer::from_fn(w, h, |x, y| {
+                    let p = rgba.get_pixel(x, y).0;
+                    image::Rgba([p[0], p[1], p[2], 0])
+                });
+                return Ok(ImageHandle {
+                    inner: DynamicImage::ImageRgba8(out),
+                    mode_override: Some("RGBX"),
+                    palette: None,
+                    palette_mode: None,
+                });
+            }
+            // RGB-stored color-space modes: convert via RGB then re-tag
+            let m: Option<&'static str> = match target_mode {
+                "YCbCr" => Some("YCbCr"),
+                "HSV" => Some("HSV"),
+                "LAB" => Some("LAB"),
+                _ => None,
+            };
+            if let Some(m) = m {
+                let rgb = handle.inner.to_rgb8();
+                return Ok(ImageHandle {
+                    inner: DynamicImage::ImageRgb8(rgb),
+                    mode_override: Some(m),
+                    palette: None,
+                    palette_mode: None,
+                });
+            }
+            // CMYK: 4-channel stored as RGBA with mode_override
+            if target_mode == "CMYK" {
+                let rgba = handle.inner.to_rgba8();
+                return Ok(ImageHandle {
+                    inner: DynamicImage::ImageRgba8(rgba),
+                    mode_override: Some("CMYK"),
+                    palette: None,
+                    palette_mode: None,
+                });
+            }
+            // I: 32-bit signed int, approximated as Luma16
+            if target_mode == "I" {
+                let (w, h) = handle.inner.dimensions();
+                let luma = handle.inner.to_luma8();
+                let buf = ImageBuffer::from_fn(w, h, |x, y| {
+                    image::Luma([luma.get_pixel(x, y)[0] as u16])
+                });
+                return Ok(ImageHandle {
+                    inner: DynamicImage::ImageLuma16(buf),
+                    mode_override: Some("I"),
+                    palette: None,
+                    palette_mode: None,
+                });
+            }
+            // F: 32-bit float, approximated as Luma16
+            if target_mode == "F" {
+                let (w, h) = handle.inner.dimensions();
+                let luma = handle.inner.to_luma8();
+                let buf = ImageBuffer::from_fn(w, h, |x, y| {
+                    image::Luma([luma.get_pixel(x, y)[0] as u16])
+                });
+                return Ok(ImageHandle {
+                    inner: DynamicImage::ImageLuma16(buf),
+                    mode_override: Some("F"),
+                    palette: None,
+                    palette_mode: None,
+                });
+            }
+            // I;16 variants
+            if matches!(target_mode, "I;16" | "I;16B" | "I;16L" | "I;16N") {
+                let (w, h) = handle.inner.dimensions();
+                let luma = handle.inner.to_luma8();
+                let buf = ImageBuffer::from_fn(w, h, |x, y| {
+                    image::Luma([luma.get_pixel(x, y)[0] as u16])
+                });
+                let m: &'static str = match target_mode {
+                    "I;16" => "I;16",
+                    "I;16B" => "I;16B",
+                    "I;16L" => "I;16L",
+                    "I;16N" => "I;16N",
+                    _ => unreachable!(),
+                };
+                return Ok(ImageHandle {
+                    inner: DynamicImage::ImageLuma16(buf),
+                    mode_override: Some(m),
+                    palette: None,
+                    palette_mode: None,
+                });
+            }
+            return Err(PilError::UnsupportedMode(target_mode.to_string()));
+        }
     };
     Ok(ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Palette helpers
+// ---------------------------------------------------------------------------
+
+/// Expand a P/PA image through its stored palette into an RGBA/RGB/L image.
+pub fn expand_palette(handle: &ImageHandle) -> Result<ImageHandle> {
+    let (w, h) = handle.inner.dimensions();
+    let pal = handle.palette.as_deref().unwrap_or(&[]);
+    let pal_mode = handle.palette_mode.as_deref().unwrap_or("RGB");
+    let stride = if pal_mode == "RGBA" { 4 } else { 3 };
+
+    match mode(handle) {
+        "P" => {
+            let luma = handle.inner.to_luma8();
+            if stride == 4 {
+                let out = ImageBuffer::from_fn(w, h, |x, y| {
+                    let idx = luma.get_pixel(x, y)[0] as usize;
+                    let base = (idx * 4).min(pal.len().saturating_sub(4));
+                    image::Rgba([
+                        pal.get(base).copied().unwrap_or(0),
+                        pal.get(base + 1).copied().unwrap_or(0),
+                        pal.get(base + 2).copied().unwrap_or(0),
+                        pal.get(base + 3).copied().unwrap_or(255),
+                    ])
+                });
+                Ok(ImageHandle::new(DynamicImage::ImageRgba8(out)))
+            } else {
+                let out = ImageBuffer::from_fn(w, h, |x, y| {
+                    let idx = luma.get_pixel(x, y)[0] as usize;
+                    let base = (idx * 3).min(pal.len().saturating_sub(3));
+                    image::Rgb([
+                        pal.get(base).copied().unwrap_or(0),
+                        pal.get(base + 1).copied().unwrap_or(0),
+                        pal.get(base + 2).copied().unwrap_or(0),
+                    ])
+                });
+                Ok(ImageHandle::new(DynamicImage::ImageRgb8(out)))
+            }
+        }
+        "PA" => {
+            let luma_a = handle.inner.to_luma_alpha8();
+            let out = ImageBuffer::from_fn(w, h, |x, y| {
+                let px = luma_a.get_pixel(x, y);
+                let idx = px[0] as usize;
+                let pix_alpha = px[1];
+                let base = (idx * stride).min(pal.len().saturating_sub(stride));
+                let pal_alpha = if stride == 4 {
+                    pal.get(base + 3).copied().unwrap_or(255)
+                } else {
+                    255
+                };
+                image::Rgba([
+                    pal.get(base).copied().unwrap_or(0),
+                    pal.get(base + 1).copied().unwrap_or(0),
+                    pal.get(base + 2).copied().unwrap_or(0),
+                    ((pix_alpha as u16 * pal_alpha as u16) / 255) as u8,
+                ])
+            });
+            Ok(ImageHandle::new(DynamicImage::ImageRgba8(out)))
+        }
+        _ => Err(PilError::InvalidOperation(
+            "expand_palette: not a palette image".into(),
+        )),
+    }
+}
+
+/// Return the stored palette bytes, optionally re-encoded for `rawmode`.
+/// rawmode can be "RGB" (3 bytes/entry) or "RGBA" (4 bytes/entry).
+pub fn getpalette(handle: &ImageHandle, rawmode: &str) -> Result<Vec<u8>> {
+    let pal = handle
+        .palette
+        .as_deref()
+        .ok_or_else(|| PilError::InvalidOperation("image has no palette".into()))?;
+    let pal_mode = handle.palette_mode.as_deref().unwrap_or("RGB");
+    let src_stride = if pal_mode == "RGBA" { 4 } else { 3 };
+    let dst_stride = if rawmode == "RGBA" { 4 } else { 3 };
+    let n_entries = pal.len() / src_stride;
+    let mut out = Vec::with_capacity(n_entries * dst_stride);
+    for i in 0..n_entries {
+        let base = i * src_stride;
+        let r = pal.get(base).copied().unwrap_or(0);
+        let g = pal.get(base + 1).copied().unwrap_or(0);
+        let b = pal.get(base + 2).copied().unwrap_or(0);
+        let a = if src_stride == 4 {
+            pal.get(base + 3).copied().unwrap_or(255)
+        } else {
+            255
+        };
+        out.push(r);
+        out.push(g);
+        out.push(b);
+        if dst_stride == 4 {
+            out.push(a);
+        }
+    }
+    Ok(out)
+}
+
+pub fn getpalettemode(handle: &ImageHandle) -> Result<String> {
+    handle
+        .palette_mode
+        .clone()
+        .ok_or_else(|| PilError::InvalidOperation("image has no palette".into()))
+}
+
+/// Store palette bytes on the handle.
+/// `data_mode` is the mode of the incoming bytes (e.g. "RGB", "RGBA").
+/// Always normalises to a 256-entry array internally.
+pub fn putpalette(handle: &mut ImageHandle, data: &[u8], data_mode: &str) {
+    let stride = if data_mode == "RGBA" { 4 } else { 3 };
+    let n = data.len() / stride;
+    // Store as the given mode, padded/trimmed to exactly 256 entries
+    let mut pal = vec![0u8; 256 * stride];
+    for i in 0..n.min(256) {
+        pal[i * stride..i * stride + stride]
+            .copy_from_slice(&data[i * stride..i * stride + stride]);
+    }
+    handle.palette = Some(pal);
+    handle.palette_mode = Some(data_mode.to_string());
+    // Ensure mode_override is consistent
+    if handle.mode_override == Some("P") && stride == 4 {
+        handle.mode_override = Some("P"); // palette has RGBA but image stays P
+                                          // Convert internal storage to RGBA palette, keep pixels as indices
+    }
+}
+
+pub fn putpalettealpha(handle: &mut ImageHandle, index: usize, alpha: u8) -> Result<()> {
+    let stride = if handle.palette_mode.as_deref() == Some("RGBA") {
+        4
+    } else {
+        3
+    };
+    let pal = handle
+        .palette
+        .get_or_insert_with(|| vec![0u8; 256 * stride]);
+    // If palette is RGB (3-byte), upgrade to RGBA (4-byte)
+    if stride == 3 {
+        let mut rgba_pal = vec![255u8; 256 * 4];
+        for i in 0..256 {
+            rgba_pal[i * 4] = pal.get(i * 3).copied().unwrap_or(0);
+            rgba_pal[i * 4 + 1] = pal.get(i * 3 + 1).copied().unwrap_or(0);
+            rgba_pal[i * 4 + 2] = pal.get(i * 3 + 2).copied().unwrap_or(0);
+        }
+        *pal = rgba_pal;
+        handle.palette_mode = Some("RGBA".to_string());
+    }
+    let pal = handle.palette.as_mut().unwrap();
+    if index < 256 {
+        pal[index * 4 + 3] = alpha;
+    }
+    Ok(())
+}
+
+pub fn putpalettealphas(handle: &mut ImageHandle, alphas: &[u8]) -> Result<()> {
+    let stride = if handle.palette_mode.as_deref() == Some("RGBA") {
+        4
+    } else {
+        3
+    };
+    let pal = handle
+        .palette
+        .get_or_insert_with(|| vec![0u8; 256 * stride]);
+    // Upgrade to RGBA if needed
+    if stride == 3 {
+        let mut rgba_pal = vec![255u8; 256 * 4];
+        for i in 0..256 {
+            rgba_pal[i * 4] = pal.get(i * 3).copied().unwrap_or(0);
+            rgba_pal[i * 4 + 1] = pal.get(i * 3 + 1).copied().unwrap_or(0);
+            rgba_pal[i * 4 + 2] = pal.get(i * 3 + 2).copied().unwrap_or(0);
+        }
+        *pal = rgba_pal;
+        handle.palette_mode = Some("RGBA".to_string());
+    }
+    let pal = handle.palette.as_mut().unwrap();
+    for (i, &a) in alphas.iter().enumerate().take(256) {
+        pal[i * 4 + 3] = a;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -740,6 +1275,8 @@ pub fn filter(handle: &ImageHandle, name: &str, args: &[f32]) -> Result<ImageHan
     Ok(ImageHandle {
         inner: out,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
 }
 
@@ -863,6 +1400,8 @@ pub fn apply_kernel(
         return ImageHandle {
             inner: DynamicImage::ImageLuma8(out),
             mode_override: handle.mode_override,
+            palette: None,
+            palette_mode: None,
         };
     }
 
@@ -900,6 +1439,8 @@ pub fn apply_kernel(
     ImageHandle {
         inner: result,
         mode_override: handle.mode_override,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -1904,29 +2445,34 @@ pub fn paste(dst: &mut ImageHandle, src: &ImageHandle, x: i32, y: i32, mask: Opt
 
 pub fn split(handle: &ImageHandle) -> Vec<ImageHandle> {
     let (w, h) = handle.inner.dimensions();
+    let m = mode(handle);
+
+    // Determine number of bands and which RGBA indices to pull them from
+    // to_rgba8() converts all formats: Rgb8→[R,G,B,255], LumaA8→[L,L,L,A], etc.
     let rgba = handle.inner.to_rgba8();
 
-    let mut channels = Vec::new();
-    let num = match mode(handle) {
-        "L" => 1,
-        "LA" => 2,
-        "RGB" => 3,
-        _ => 4, // RGBA
+    let (num, indices): (usize, Vec<usize>) = match m {
+        "L" | "P" | "1" => (1, vec![0]),
+        "LA" | "La" | "PA" => (2, vec![0, 3]),
+        "RGB" | "YCbCr" | "LAB" | "HSV" => (3, vec![0, 1, 2]),
+        "RGBA" | "CMYK" | "RGBX" | "RGBa" => (4, vec![0, 1, 2, 3]),
+        "I" | "F" | "I;16" | "I;16L" | "I;16B" | "I;16N" => (1, vec![0]),
+        _ => (4, vec![0, 1, 2, 3]),
     };
 
-    for ch in 0..num {
-        let idx = if mode(handle) == "LA" && ch == 1 {
-            3
-        } else {
-            ch
-        }; // LA: luminance + alpha
-        let buf = ImageBuffer::from_fn(w, h, |x, y| image::Luma([rgba.get_pixel(x, y).0[idx]]));
-        channels.push(ImageHandle {
-            inner: DynamicImage::ImageLuma8(buf),
-            mode_override: None,
-        });
-    }
-    channels
+    let _ = num;
+    indices
+        .into_iter()
+        .map(|idx| {
+            let buf = ImageBuffer::from_fn(w, h, |x, y| image::Luma([rgba.get_pixel(x, y).0[idx]]));
+            ImageHandle {
+                inner: DynamicImage::ImageLuma8(buf),
+                mode_override: None,
+                palette: None,
+                palette_mode: None,
+            }
+        })
+        .collect()
 }
 
 pub fn merge(target_mode: &str, channels: &[&ImageHandle]) -> Result<ImageHandle> {
@@ -1979,11 +2525,28 @@ pub fn merge(target_mode: &str, channels: &[&ImageHandle]) -> Result<ImageHandle
                 ])
             }))
         }
+        "PA" => {
+            // P channel (indices) + A channel — merge into LumaA8 with P palette from ch0
+            if channels.len() < 2 {
+                return Err(PilError::InvalidOperation("PA requires 2 channels".into()));
+            }
+            let buf = ImageBuffer::from_fn(w, h, |x, y| {
+                image::LumaA([get_ch(0, x, y), get_ch(1, x, y)])
+            });
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLumaA8(buf),
+                mode_override: Some("PA"),
+                palette: channels[0].palette.clone(),
+                palette_mode: channels[0].palette_mode.clone(),
+            });
+        }
         _ => return Err(PilError::UnsupportedMode(target_mode.to_string())),
     };
     Ok(ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
 }
 
@@ -2171,6 +2734,104 @@ pub fn frombytes(mode_str: &str, width: u32, height: u32, data: &[u8]) -> Result
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageLuma8(buf),
                 mode_override: Some("1"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        "I" | "F" | "I;16" | "I;16L" | "I;16N" => {
+            // Stored as Luma16 (2 bytes per pixel, little-endian)
+            let buf: ImageBuffer<Luma<u16>, Vec<u16>> = {
+                let shorts: Vec<u16> = data
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                ImageBuffer::from_raw(width, height, shorts)
+                    .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?
+            };
+            let mo: Option<&'static str> = match mode_str {
+                "I" => Some("I"),
+                "F" => Some("F"),
+                "I;16" => Some("I;16"),
+                "I;16L" => Some("I;16L"),
+                "I;16N" => Some("I;16N"),
+                _ => None,
+            };
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLuma16(buf),
+                mode_override: mo,
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        "I;16B" => {
+            // Big-endian 16-bit: parse BE bytes, store as LE u16 internally
+            let buf: ImageBuffer<Luma<u16>, Vec<u16>> = {
+                let shorts: Vec<u16> = data
+                    .chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
+                ImageBuffer::from_raw(width, height, shorts)
+                    .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?
+            };
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLuma16(buf),
+                mode_override: Some("I;16B"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        "P" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLuma8(buf),
+                mode_override: Some("P"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        "PA" => {
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLumaA8(buf),
+                mode_override: Some("PA"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        "CMYK" | "RGBX" | "RGBa" => {
+            // 4-channel modes stored as Rgba8
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            let mo: Option<&'static str> = match mode_str {
+                "CMYK" => Some("CMYK"),
+                "RGBX" => Some("RGBX"),
+                "RGBa" => Some("RGBa"),
+                _ => None,
+            };
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageRgba8(buf),
+                mode_override: mo,
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        "YCbCr" | "LAB" | "HSV" => {
+            // 3-channel color-space modes stored as Rgb8
+            let buf = ImageBuffer::from_raw(width, height, data.to_vec())
+                .ok_or_else(|| PilError::InvalidOperation("buffer size mismatch".into()))?;
+            let mo: Option<&'static str> = match mode_str {
+                "YCbCr" => Some("YCbCr"),
+                "LAB" => Some("LAB"),
+                "HSV" => Some("HSV"),
+                _ => None,
+            };
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageRgb8(buf),
+                mode_override: mo,
+                palette: None,
+                palette_mode: None,
             });
         }
         _ => return Err(PilError::UnsupportedMode(mode_str.to_string())),
@@ -2178,6 +2839,8 @@ pub fn frombytes(mode_str: &str, width: u32, height: u32, data: &[u8]) -> Result
     Ok(ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
 }
 
@@ -2207,6 +2870,8 @@ pub fn adjust_brightness(handle: &ImageHandle, factor: f32) -> ImageHandle {
     ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -2240,6 +2905,8 @@ pub fn adjust_contrast(handle: &ImageHandle, factor: f32) -> ImageHandle {
     ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -2268,6 +2935,8 @@ pub fn adjust_color(handle: &ImageHandle, factor: f32) -> ImageHandle {
     ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -2297,6 +2966,8 @@ pub fn adjust_sharpness(handle: &ImageHandle, factor: f32) -> ImageHandle {
     ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -2376,6 +3047,8 @@ pub fn autocontrast(handle: &ImageHandle) -> ImageHandle {
     ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -2395,6 +3068,8 @@ pub fn invert_image(handle: &ImageHandle) -> ImageHandle {
     ImageHandle {
         inner: img,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -2440,7 +3115,7 @@ pub fn putdata(handle: &mut ImageHandle, data: &[u8]) {
         DynamicImage::ImageLumaA8(_) => 2,
         DynamicImage::ImageRgb8(_) => 3,
         DynamicImage::ImageRgba8(_) => 4,
-        _ => 3,
+        _ => 1,
     };
     let mut idx = 0usize;
     for y in 0..h {
@@ -2448,8 +3123,6 @@ pub fn putdata(handle: &mut ImageHandle, data: &[u8]) {
             if idx + bands > data.len() {
                 return;
             }
-            // For LA (bands==2): pass as [L, A, 0, 255] so that putpixel's
-            // LA branch reads color[0]=L and color[1]=A correctly.
             let color = match bands {
                 1 => [data[idx], data[idx], data[idx], 255],
                 2 => [data[idx], data[idx + 1], 0, 255],
@@ -2459,6 +3132,24 @@ pub fn putdata(handle: &mut ImageHandle, data: &[u8]) {
             };
             putpixel(handle, x, y, color);
             idx += bands;
+        }
+    }
+}
+
+/// Write 16-bit pixel data (2 LE bytes per pixel) into a Luma16 image.
+pub fn putdata_16bit(handle: &mut ImageHandle, data: &[u8]) {
+    if let DynamicImage::ImageLuma16(buf) = &mut handle.inner {
+        let (w, h) = buf.dimensions();
+        let mut idx = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                if idx + 2 > data.len() {
+                    return;
+                }
+                let v = u16::from_le_bytes([data[idx], data[idx + 1]]);
+                buf.put_pixel(x, y, Luma([v]));
+                idx += 2;
+            }
         }
     }
 }
@@ -2481,6 +3172,8 @@ pub fn point(handle: &ImageHandle, lut: &[u8]) -> Result<ImageHandle> {
             Ok(ImageHandle {
                 inner: DynamicImage::ImageLuma8(out),
                 mode_override: None,
+                palette: None,
+                palette_mode: None,
             })
         }
         DynamicImage::ImageLumaA8(buf) => {
@@ -2498,6 +3191,8 @@ pub fn point(handle: &ImageHandle, lut: &[u8]) -> Result<ImageHandle> {
             Ok(ImageHandle {
                 inner: DynamicImage::ImageLumaA8(out),
                 mode_override: None,
+                palette: None,
+                palette_mode: None,
             })
         }
         DynamicImage::ImageRgb8(buf) => {
@@ -2525,6 +3220,8 @@ pub fn point(handle: &ImageHandle, lut: &[u8]) -> Result<ImageHandle> {
             Ok(ImageHandle {
                 inner: DynamicImage::ImageRgb8(out),
                 mode_override: None,
+                palette: None,
+                palette_mode: None,
             })
         }
         DynamicImage::ImageRgba8(buf) => {
@@ -2560,6 +3257,8 @@ pub fn point(handle: &ImageHandle, lut: &[u8]) -> Result<ImageHandle> {
             Ok(ImageHandle {
                 inner: DynamicImage::ImageRgba8(out),
                 mode_override: handle.mode_override,
+                palette: None,
+                palette_mode: None,
             })
         }
         _ => Err(PilError::InvalidOperation(
@@ -2613,6 +3312,8 @@ pub fn blend(im1: &ImageHandle, im2: &ImageHandle, alpha: f64) -> Result<ImageHa
             Ok(ImageHandle {
                 inner: DynamicImage::ImageLuma8(out),
                 mode_override: None,
+                palette: None,
+                palette_mode: None,
             })
         }
         "RGB" => {
@@ -2630,6 +3331,8 @@ pub fn blend(im1: &ImageHandle, im2: &ImageHandle, alpha: f64) -> Result<ImageHa
             Ok(ImageHandle {
                 inner: DynamicImage::ImageRgb8(out),
                 mode_override: None,
+                palette: None,
+                palette_mode: None,
             })
         }
         _ => {
@@ -2649,6 +3352,8 @@ pub fn blend(im1: &ImageHandle, im2: &ImageHandle, alpha: f64) -> Result<ImageHa
             Ok(ImageHandle {
                 inner: DynamicImage::ImageRgba8(out),
                 mode_override: None,
+                palette: None,
+                palette_mode: None,
             })
         }
     }
@@ -2683,6 +3388,8 @@ pub fn composite(im1: &ImageHandle, im2: &ImageHandle, mask: &ImageHandle) -> Re
     Ok(ImageHandle {
         inner: DynamicImage::ImageRgba8(out),
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
 }
 
@@ -2720,6 +3427,8 @@ pub fn alpha_composite(dst: &ImageHandle, src: &ImageHandle) -> Result<ImageHand
     Ok(ImageHandle {
         inner: DynamicImage::ImageRgba8(out),
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
 }
 
@@ -2767,23 +3476,33 @@ pub fn quantize(handle: &ImageHandle, max_colors: usize) -> Result<ImageHandle> 
         }
     }
 
-    // Median-cut quantization
-    let palette = median_cut(&pixels, max_colors);
+    // Median-cut quantization → palette as RGB triplets
+    let palette_rgb = median_cut(&pixels, max_colors);
 
-    // Map each pixel to nearest palette color
-    let mut out = ImageBuffer::new(w, h);
+    // Build flat 256-entry RGB palette (padded with zeros)
+    let mut flat_palette = vec![0u8; 256 * 3];
+    for (i, rgb) in palette_rgb.iter().enumerate().take(256) {
+        flat_palette[i * 3] = rgb[0];
+        flat_palette[i * 3 + 1] = rgb[1];
+        flat_palette[i * 3 + 2] = rgb[2];
+    }
+
+    // Map each pixel to nearest palette index
+    let mut out: ImageBuffer<image::Luma<u8>, Vec<u8>> = ImageBuffer::new(w, h);
     for y in 0..h {
         for x in 0..w {
             let p = rgba.get_pixel(x, y);
             let rgb = [p[0], p[1], p[2]];
-            let nearest = find_nearest(&palette, &rgb);
-            out.put_pixel(x, y, image::Rgb(nearest));
+            let idx = find_nearest_idx(&palette_rgb, &rgb);
+            out.put_pixel(x, y, image::Luma([idx as u8]));
         }
     }
 
     Ok(ImageHandle {
-        inner: DynamicImage::ImageRgb8(out),
-        mode_override: None,
+        inner: DynamicImage::ImageLuma8(out),
+        mode_override: Some("P"),
+        palette: Some(flat_palette),
+        palette_mode: Some("RGB".to_string()),
     })
 }
 
@@ -2856,23 +3575,23 @@ fn median_cut(pixels: &[[u8; 3]], max_colors: usize) -> Vec<[u8; 3]> {
         .collect()
 }
 
-fn find_nearest(palette: &[[u8; 3]], pixel: &[u8; 3]) -> [u8; 3] {
-    let mut best = palette[0];
+fn find_nearest_idx(palette: &[[u8; 3]], pixel: &[u8; 3]) -> usize {
+    let mut best_idx = 0;
     let mut best_dist = u32::MAX;
-    for &c in palette {
+    for (i, &c) in palette.iter().enumerate() {
         let dr = c[0] as i32 - pixel[0] as i32;
         let dg = c[1] as i32 - pixel[1] as i32;
         let db = c[2] as i32 - pixel[2] as i32;
         let d = (dr * dr + dg * dg + db * db) as u32;
         if d < best_dist {
             best_dist = d;
-            best = c;
+            best_idx = i;
             if d == 0 {
                 break;
             }
         }
     }
-    best
+    best_idx
 }
 
 // ---------------------------------------------------------------------------
@@ -2926,6 +3645,8 @@ pub fn reduce(handle: &ImageHandle, factor_x: u32, factor_y: u32) -> ImageHandle
     ImageHandle {
         inner: resized,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -2959,6 +3680,8 @@ pub fn offset_image(handle: &ImageHandle, x: i32, y: i32) -> ImageHandle {
     ImageHandle {
         inner: result,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -2971,6 +3694,8 @@ pub fn expand_image(handle: &ImageHandle, x: u32, y: u32, color: &[u8]) -> Image
     let bg = new_image(m, new_w, new_h, color).unwrap_or_else(|_| ImageHandle {
         inner: image::DynamicImage::ImageRgba8(image::RgbaImage::new(new_w, new_h)),
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     });
     let mut bg = bg;
     paste(&mut bg, handle, x as i32, y as i32, None);
@@ -3006,6 +3731,8 @@ pub fn point_transform(handle: &ImageHandle, scale: f64, offset: f64) -> ImageHa
     ImageHandle {
         inner: result,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -3031,6 +3758,8 @@ pub fn convert_matrix(
         return Ok(ImageHandle {
             inner: image::DynamicImage::ImageLuma8(out),
             mode_override: None,
+            palette: None,
+            palette_mode: None,
         });
     }
     if matrix.len() < 12 {
@@ -3069,6 +3798,8 @@ pub fn convert_matrix(
     Ok(ImageHandle {
         inner: result,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     })
 }
 
@@ -3178,6 +3909,8 @@ pub fn rankfilter(handle: &ImageHandle, size: u32, rank: u32) -> ImageHandle {
     ImageHandle {
         inner: di,
         mode_override: handle.mode_override,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -3209,6 +3942,8 @@ pub fn modefilter(handle: &ImageHandle, size: u32) -> ImageHandle {
     ImageHandle {
         inner: image::DynamicImage::ImageLuma8(out),
         mode_override: handle.mode_override,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -3253,6 +3988,8 @@ pub fn effect_spread(handle: &ImageHandle, distance: u32) -> ImageHandle {
     ImageHandle {
         inner: result,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -3291,6 +4028,8 @@ where
     ImageHandle {
         inner: result,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -3330,6 +4069,8 @@ pub fn chop_add(im1: &ImageHandle, im2: &ImageHandle, scale: f64, offset: f64) -
     ImageHandle {
         inner: result,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -3369,6 +4110,8 @@ pub fn chop_subtract(im1: &ImageHandle, im2: &ImageHandle, scale: f64, offset: f
     ImageHandle {
         inner: result,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
@@ -3415,6 +4158,8 @@ pub fn chop_invert(im: &ImageHandle) -> ImageHandle {
     ImageHandle {
         inner: result,
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 pub fn chop_and(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
@@ -3479,20 +4224,28 @@ pub fn linear_gradient() -> ImageHandle {
     ImageHandle {
         inner: image::DynamicImage::ImageLuma8(buf),
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }
 
-/// Radial gradient: L-mode, 256x256, matches Pillow C formula: sqrt(x*x + y*y).
+/// Radial gradient: L-mode, 256x256, matches Pillow C formula.
+/// v = min(255, floor(sqrt((x-128)^2 + (y-128)^2) * sqrt(2)))
 pub fn radial_gradient() -> ImageHandle {
+    const SQRT2: f64 = std::f64::consts::SQRT_2;
     let mut buf = image::GrayImage::new(256, 256);
     for y in 0..256u32 {
         for x in 0..256u32 {
-            let v = ((x as f64 * x as f64 + y as f64 * y as f64).sqrt()).min(255.0) as u8;
+            let ix = (x as f64) - 128.0;
+            let iy = (y as f64) - 128.0;
+            let v = ((ix * ix + iy * iy).sqrt() * SQRT2).min(255.0) as u8;
             buf.put_pixel(x, y, image::Luma([v]));
         }
     }
     ImageHandle {
         inner: image::DynamicImage::ImageLuma8(buf),
         mode_override: None,
+        palette: None,
+        palette_mode: None,
     }
 }

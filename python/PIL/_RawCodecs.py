@@ -25,7 +25,7 @@ def _rawmode_bytes_per_pixel(rawmode: str) -> int:
         "LA": 2, "PA": 2,
         "RGB": 3, "BGR": 3, "YCbCr": 3, "LAB": 3, "HSV": 3,
         "RGBA": 4, "BGRA": 4, "RGBX": 4, "RGBa": 4, "CMYK": 4,
-        "I": 4, "F": 4,
+        "I": 2, "F": 2,
         "I;16": 2, "I;16B": 2, "I;16L": 2, "I;16N": 2,
         "I;32": 4, "F;32": 4, "F;32B": 4, "F;32BF": 4, "F;32F": 4,
     }
@@ -36,7 +36,7 @@ def _unpack_row(data: bytes, rawmode: str, width: int) -> list:
     """Unpack a row of raw pixel data into a list of pixel values."""
     if rawmode in ("L", "P", "1", "A", "X"):
         return list(data[:width])
-    elif rawmode == "LA":
+    elif rawmode in ("LA", "La", "PA"):
         return [(data[i * 2], data[i * 2 + 1]) for i in range(min(width, len(data) // 2))]
     elif rawmode == "RGB":
         return [(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]) for i in range(min(width, len(data) // 3))]
@@ -47,7 +47,12 @@ def _unpack_row(data: bytes, rawmode: str, width: int) -> list:
     elif rawmode == "BGRA":
         return [(data[i * 4 + 2], data[i * 4 + 1], data[i * 4], data[i * 4 + 3]) for i in range(min(width, len(data) // 4))]
     elif rawmode == "RGBX":
-        return [(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]) for i in range(min(width, len(data) // 4))]
+        return [(data[i * 4], data[i * 4 + 1], data[i * 4 + 2], data[i * 4 + 3]) for i in range(min(width, len(data) // 4))]
+    elif rawmode == "CMYK":
+        return [(data[i * 4], data[i * 4 + 1], data[i * 4 + 2], data[i * 4 + 3]) for i in range(min(width, len(data) // 4))]
+    elif rawmode in ("I", "F"):
+        # Our implementation stores I and F as Luma16 (2 bytes/pixel, little-endian u16)
+        return [struct.unpack_from("<H", data, i * 2)[0] for i in range(min(width, len(data) // 2))]
     elif rawmode in ("I;16", "I;16L"):
         return [struct.unpack_from("<H", data, i * 2)[0] for i in range(min(width, len(data) // 2))]
     elif rawmode == "I;16B":
@@ -83,6 +88,13 @@ def _pack_pixel(px: Any, rawmode: str, mode: str) -> bytes:
     elif rawmode == "BGRA":
         a = int(px[3]) & 0xFF if len(px) >= 4 else 255
         return bytes([int(px[2]) & 0xFF, int(px[1]) & 0xFF, int(px[0]) & 0xFF, a])
+    elif rawmode == "I;16B":
+        v = int(px[0]) if isinstance(px, (tuple, list)) else int(px)
+        return struct.pack(">H", v & 0xFFFF)
+    elif rawmode in ("I", "F"):
+        # Our implementation stores I and F as Luma16 (2 bytes/pixel, little-endian u16)
+        v = int(px[0]) if isinstance(px, (tuple, list)) else int(px)
+        return struct.pack("<H", v & 0xFFFF)
     elif rawmode == "LA":
         a = int(px[1]) & 0xFF if len(px) >= 2 else 255
         return bytes([int(px[0]) & 0xFF, a])

@@ -66,7 +66,21 @@ fn fill(
     Ok(imaging_core::ImagingCore { handle })
 }
 
-pub fn extract_color_bytes(color: &Bound<'_, PyAny>, _mode: &str) -> PyResult<Vec<u8>> {
+pub fn extract_color_bytes(color: &Bound<'_, PyAny>, mode: &str) -> PyResult<Vec<u8>> {
+    // For 16-bit integer modes (stored as Luma16), a scalar int should be split into LE bytes
+    let is_16bit = matches!(mode, "I" | "F" | "I;16" | "I;16L" | "I;16B" | "I;16N");
+    if is_16bit {
+        if let Ok(v) = color.extract::<u32>() {
+            let lo = (v & 0xFF) as u8;
+            let hi = ((v >> 8) & 0xFF) as u8;
+            return Ok(vec![lo, hi, 0, 255]);
+        }
+        if let Ok(t) = color.extract::<(u32,)>() {
+            let lo = (t.0 & 0xFF) as u8;
+            let hi = ((t.0 >> 8) & 0xFF) as u8;
+            return Ok(vec![lo, hi, 0, 255]);
+        }
+    }
     if let Ok(v) = color.extract::<u8>() {
         return Ok(vec![v, v, v, 255]);
     }
@@ -138,17 +152,29 @@ fn alpha_composite_module(
 }
 
 #[pyfunction]
-fn linear_gradient(_mode: &str) -> imaging_core::ImagingCore {
-    imaging_core::ImagingCore {
-        handle: pil_rust_core::linear_gradient(),
+fn linear_gradient(mode: &str) -> PyResult<imaging_core::ImagingCore> {
+    if !matches!(mode, "L" | "P" | "I" | "F") {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "mode must be L, P, I or F, not {mode}"
+        )));
     }
+    let l_handle = pil_rust_core::linear_gradient();
+    let handle = pil_rust_core::convert(&l_handle, mode)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
 }
 
 #[pyfunction]
-fn radial_gradient(_mode: &str) -> imaging_core::ImagingCore {
-    imaging_core::ImagingCore {
-        handle: pil_rust_core::radial_gradient(),
+fn radial_gradient(mode: &str) -> PyResult<imaging_core::ImagingCore> {
+    if !matches!(mode, "L" | "P" | "I" | "F") {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "mode must be L, P, I or F, not {mode}"
+        )));
     }
+    let l_handle = pil_rust_core::radial_gradient();
+    let handle = pil_rust_core::convert(&l_handle, mode)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
 }
 
 #[pyfunction]
