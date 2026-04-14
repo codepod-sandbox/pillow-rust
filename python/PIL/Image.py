@@ -670,6 +670,9 @@ class Image:
         self.load()
 
         if not format or format == "PPM":
+            if self.mode not in ("1", "L", "P", "RGB"):
+                msg = f"cannot write mode {self.mode} as PPM"
+                raise ValueError(msg)
             self.im.save_ppm(filename)
         else:
             self.save(filename, format, **options)
@@ -1163,6 +1166,10 @@ class Image:
         # colorspace conversion
         if dither is None:
             dither = Dither.FLOYDSTEINBERG
+
+        # Sync Python-level palette to ImagingCore before P-mode conversions
+        if self.mode in ("P", "PA") and self.palette:
+            self.im.putpalette(self.palette.tobytes(), self.palette.mode)
 
         try:
             im = self.im.convert(mode, dither)
@@ -3561,11 +3568,16 @@ def open(
     :exception TypeError: If ``formats`` is not ``None``, a list or a tuple.
     """
 
+    # Validate formats early (before fast path) so TypeError is always raised
+    if formats is not None and not isinstance(formats, (list, tuple)):
+        msg = "formats must be a list or tuple"
+        raise TypeError(msg)
+
     # --- pillow-rust fast path ---
     _fp_path = fp
     if hasattr(_fp_path, "__fspath__"):
         _fp_path = os.fspath(_fp_path)
-    if isinstance(_fp_path, (str, bytes)):
+    if isinstance(_fp_path, (str, bytes)) and formats is None:
         try:
             with builtins.open(_fp_path, "rb") as _f:
                 _data = _f.read()
@@ -3579,6 +3591,7 @@ def open(
             image.format_description = None
             image.info = {}
             image._exif = None
+            image.fp = None
             return image
         except Exception:
             pass  # fall through to original logic

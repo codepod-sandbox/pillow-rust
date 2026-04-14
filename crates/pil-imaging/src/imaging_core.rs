@@ -79,7 +79,7 @@ impl ImagingCore {
         let px = pil_rust_core::getpixel(&self.handle, x, y);
         let mode = pil_rust_core::mode(&self.handle);
         let result: Py<PyAny> = match mode {
-            "1" => (if px[0] >= 128 { 255i32 } else { 0i32 })
+            "1" => (if px[0] >= 128 { 1i32 } else { 0i32 })
                 .into_pyobject(py)?
                 .into_any()
                 .unbind(),
@@ -393,7 +393,7 @@ impl ImagingCore {
                 let list = PyList::empty(py);
                 for (count, px) in entries {
                     let color: Py<PyAny> = match mode {
-                        "1" => (if px[0] >= 128 { 255u8 } else { 0u8 })
+                        "1" => (if px[0] >= 128 { 1u8 } else { 0u8 })
                             .into_pyobject(py)?
                             .into_any()
                             .unbind(),
@@ -551,7 +551,7 @@ impl ImagingCore {
         let px = pil_rust_core::getpixel(&self.handle, x as u32, y as u32);
         let mode = pil_rust_core::mode(&self.handle);
         let result: Py<PyAny> = match mode {
-            "1" => (if px[0] >= 128 { 255i32 } else { 0i32 })
+            "1" => (if px[0] >= 128 { 1i32 } else { 0i32 })
                 .into_pyobject(py)?
                 .into_any()
                 .unbind(),

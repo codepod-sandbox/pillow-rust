@@ -15,7 +15,7 @@ fn extract_rgba(color: &Bound<'_, PyAny>) -> PyResult<[u8; 4]> {
         let g = ((uv >> 8) & 0xFF) as u8;
         let b = (uv & 0xFF) as u8;
         let a = ((uv >> 24) & 0xFF) as u8;
-        return Ok([r, g, b, if a == 0 { 255 } else { a }]);
+        return Ok([r, g, b, a]);
     }
     if let Ok(t) = color.extract::<(u8, u8, u8, u8)>() {
         return Ok([t.0, t.1, t.2, t.3]);

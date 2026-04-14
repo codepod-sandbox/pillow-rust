@@ -282,10 +282,6 @@ def contain(
     :return: An image.
     """
 
-    # If the image already fits within the target, return a copy (no upscaling).
-    if image.width <= size[0] and image.height <= size[1]:
-        return image.copy()
-
     im_ratio = image.width / image.height
     dest_ratio = size[0] / size[1]
 

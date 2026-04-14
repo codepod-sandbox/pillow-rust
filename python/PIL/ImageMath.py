@@ -67,7 +67,7 @@ class _Operand:
             except AttributeError as e:
                 msg = f"bad operand type for '{op}'"
                 raise TypeError(msg) from e
-            _imagingmath.unop(op, out.getim(), im_1.getim())
+            _imagingmath.unop(op, out, im_1)
         else:
             # binary operation
             im_2 = self.__fixup(im2)
@@ -93,7 +93,7 @@ class _Operand:
             except AttributeError as e:
                 msg = f"bad operand type for '{op}'"
                 raise TypeError(msg) from e
-            _imagingmath.binop(op, out.getim(), im_1.getim(), im_2.getim())
+            _imagingmath.binop(op, out, im_1, im_2)
         return _Operand(out)
 
     # unary operators

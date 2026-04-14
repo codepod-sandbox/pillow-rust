@@ -119,7 +119,7 @@ pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<Im
         }
         "1" => {
             let v = color.first().copied().unwrap_or(0);
-            let pixel = if v >= 128 { 255u8 } else { 0u8 };
+            let pixel = if v != 0 { 255u8 } else { 0u8 };
             let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([pixel]));
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageLuma8(buf),
@@ -749,6 +749,62 @@ fn bt601_luma(r: u8, g: u8, b: u8) -> u8 {
 
 pub fn convert(handle: &ImageHandle, target_mode: &str) -> Result<ImageHandle> {
     let (w, h) = handle.inner.dimensions();
+
+    // P/PA mode: must use palette to convert to RGB/RGBA/L
+    if matches!(handle.mode_override, Some("P") | Some("PA")) {
+        if let Some(pal) = &handle.palette {
+            let palette_mode = handle.palette_mode.as_deref().unwrap_or("RGB");
+            let stride = if palette_mode == "RGBA" { 4 } else { 3 };
+            if let DynamicImage::ImageLuma8(idx_buf) = &handle.inner {
+                match target_mode {
+                    "RGB" | "RGBA" | "L" | "LA" => {
+                        // Map each index through palette
+                        let rgb_buf = ImageBuffer::from_fn(w, h, |x, y| {
+                            let idx = idx_buf.get_pixel(x, y)[0] as usize;
+                            let base = (idx * stride).min(pal.len().saturating_sub(stride));
+                            let r = if base < pal.len() { pal[base] } else { 0 };
+                            let g = if base + 1 < pal.len() {
+                                pal[base + 1]
+                            } else {
+                                0
+                            };
+                            let b = if base + 2 < pal.len() {
+                                pal[base + 2]
+                            } else {
+                                0
+                            };
+                            let a = if stride == 4 && base + 3 < pal.len() {
+                                pal[base + 3]
+                            } else {
+                                255
+                            };
+                            image::Rgba([r, g, b, a])
+                        });
+                        let dyn_img = DynamicImage::ImageRgba8(rgb_buf);
+                        let result_img = match target_mode {
+                            "RGB" => DynamicImage::ImageRgb8(dyn_img.to_rgb8()),
+                            "RGBA" => dyn_img,
+                            "L" => DynamicImage::ImageLuma8(dyn_img.to_luma8()),
+                            "LA" => DynamicImage::ImageLumaA8(dyn_img.to_luma_alpha8()),
+                            _ => unreachable!(),
+                        };
+                        return Ok(ImageHandle {
+                            inner: result_img,
+                            mode_override: None,
+                            palette: None,
+                            palette_mode: None,
+                        });
+                    }
+                    "P" => {
+                        // Keep as P but maybe different palette — for now just clone
+                        return Ok(handle.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     let img = match target_mode {
         "RGB" => DynamicImage::ImageRgb8(handle.inner.to_rgb8()),
         "RGBA" => DynamicImage::ImageRgba8(handle.inner.to_rgba8()),
@@ -1609,8 +1665,8 @@ fn apply_box_blur(img: &image::DynamicImage, radius: u32) -> image::DynamicImage
 fn color_to_pixel(handle: &ImageHandle, color: [u8; 4]) -> image::Rgba<u8> {
     match &handle.inner {
         DynamicImage::ImageLumaA8(_) => {
-            // color[0] = L, color[1] = A
-            image::Rgba([color[0], color[0], color[0], color[1]])
+            // color = [R, G, B, A] from extract_rgba; R is L, A is alpha
+            image::Rgba([color[0], color[0], color[0], color[3]])
         }
         DynamicImage::ImageLuma8(_) => {
             // color[0] = L (already expanded by Python layer)
@@ -2601,6 +2657,16 @@ pub fn histogram(handle: &ImageHandle) -> Vec<u32> {
         }
         return hist;
     }
+    // P mode: count palette indices directly from the Luma8 buffer
+    if m == "P" || m == "PA" {
+        let mut hist = vec![0u32; 256];
+        if let image::DynamicImage::ImageLuma8(luma) = &handle.inner {
+            for px in luma.pixels() {
+                hist[px[0] as usize] += 1;
+            }
+        }
+        return hist;
+    }
     let num_channels = match m {
         "L" => 1,
         "LA" => 2,
@@ -3109,6 +3175,27 @@ fn parse_format(format: &str) -> Result<ImageFormat> {
 // ---------------------------------------------------------------------------
 
 pub fn putdata(handle: &mut ImageHandle, data: &[u8]) {
+    // Mode "1": normalize any non-zero value to 255 (Pillow stores 0 or 255 internally)
+    if matches!(handle.mode_override, Some(m) if m == "1") {
+        let normalized: Vec<u8> = data.iter().map(|&v| if v != 0 { 255 } else { 0 }).collect();
+        let (w, h) = handle.inner.dimensions();
+        let mut idx = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                if idx >= normalized.len() {
+                    return;
+                }
+                putpixel(
+                    handle,
+                    x,
+                    y,
+                    [normalized[idx], normalized[idx], normalized[idx], 255],
+                );
+                idx += 1;
+            }
+        }
+        return;
+    }
     let (w, h) = handle.inner.dimensions();
     let bands = match &handle.inner {
         DynamicImage::ImageLuma8(_) => 1,
@@ -3411,25 +3498,41 @@ pub fn alpha_composite(dst: &ImageHandle, src: &ImageHandle) -> Result<ImageHand
             let src_a = sa[3] as f64 / 255.0;
             let dst_a = da[3] as f64 / 255.0;
             let out_a = src_a + dst_a * (1.0 - src_a);
-            if out_a == 0.0 {
-                out.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
+            if out_a <= 0.0 {
+                // Both pixels fully transparent: preserve dst pixel
+                out.put_pixel(x, y, *da);
             } else {
-                let r =
-                    ((sa[0] as f64 * src_a + da[0] as f64 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                let g =
-                    ((sa[1] as f64 * src_a + da[1] as f64 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                let bl =
-                    ((sa[2] as f64 * src_a + da[2] as f64 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                out.put_pixel(x, y, image::Rgba([r, g, bl, (out_a * 255.0) as u8]));
+                let r = ((sa[0] as f64 * src_a + da[0] as f64 * dst_a * (1.0 - src_a)) / out_a)
+                    .round() as u8;
+                let g = ((sa[1] as f64 * src_a + da[1] as f64 * dst_a * (1.0 - src_a)) / out_a)
+                    .round() as u8;
+                let bl = ((sa[2] as f64 * src_a + da[2] as f64 * dst_a * (1.0 - src_a)) / out_a)
+                    .round() as u8;
+                out.put_pixel(x, y, image::Rgba([r, g, bl, (out_a * 255.0).round() as u8]));
             }
         }
     }
-    Ok(ImageHandle {
-        inner: DynamicImage::ImageRgba8(out),
-        mode_override: None,
-        palette: None,
-        palette_mode: None,
-    })
+    // If dst was LA/La mode, return LA (2-channel) result
+    let dst_mode = mode(dst);
+    if dst_mode == "LA" || dst_mode == "La" {
+        let la_buf = image::ImageBuffer::from_fn(w, h, |x, y| {
+            let p = out.get_pixel(x, y);
+            image::LumaA([p[0], p[3]])
+        });
+        Ok(ImageHandle {
+            inner: DynamicImage::ImageLumaA8(la_buf),
+            mode_override: Some("LA"),
+            palette: None,
+            palette_mode: None,
+        })
+    } else {
+        Ok(ImageHandle {
+            inner: DynamicImage::ImageRgba8(out),
+            mode_override: None,
+            palette: None,
+            palette_mode: None,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4172,44 +4275,38 @@ pub fn chop_xor(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
     chop_per_pixel(im1, im2, |a, b| a ^ b)
 }
 pub fn chop_soft_light(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    // Pillow C formula (integer arithmetic):
+    // ((255-a)*(a*b))/65536 + a*(255 - (255-a)*(255-b)/255)/255
     chop_per_pixel(im1, im2, |a, b| {
-        let af = a as f32 / 255.0;
-        let bf = b as f32 / 255.0;
-        let r = if bf <= 0.5 {
-            af - (1.0 - 2.0 * bf) * af * (1.0 - af)
-        } else {
-            let d = if af <= 0.25 {
-                ((16.0 * af - 12.0) * af + 4.0) * af
-            } else {
-                af.sqrt()
-            };
-            af + (2.0 * bf - 1.0) * (d - af)
-        };
-        (r * 255.0).clamp(0.0, 255.0) as u8
+        let a = a as i32;
+        let b = b as i32;
+        let part1 = (255 - a) * (a * b) / 65536;
+        let part2 = a * (255 - (255 - a) * (255 - b) / 255) / 255;
+        (part1 + part2).clamp(0, 255) as u8
     })
 }
 pub fn chop_hard_light(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    // Pillow C formula: divide by 127
     chop_per_pixel(im1, im2, |a, b| {
-        // Match Pillow's C integer formula using >>8 (divide by 256)
         let a = a as i32;
         let b = b as i32;
         if b < 128 {
-            ((2 * a * b) >> 8) as u8
+            (a * b / 127).clamp(0, 255) as u8
         } else {
-            (255 - ((2 * (255 - a) * (255 - b)) >> 8)) as u8
+            (255 - (255 - b) * (255 - a) / 127).clamp(0, 255) as u8
         }
     })
 }
 pub fn chop_overlay(im1: &ImageHandle, im2: &ImageHandle) -> ImageHandle {
+    // Pillow C formula: divide by 127
     chop_per_pixel(im1, im2, |a, b| {
-        let af = a as f32 / 255.0;
-        let bf = b as f32 / 255.0;
-        let r = if af < 0.5 {
-            2.0 * af * bf
+        let a = a as i32;
+        let b = b as i32;
+        if a < 128 {
+            (a * b / 127).clamp(0, 255) as u8
         } else {
-            1.0 - 2.0 * (1.0 - af) * (1.0 - bf)
-        };
-        (r * 255.0).clamp(0.0, 255.0) as u8
+            (255 - (255 - a) * (255 - b) / 127).clamp(0, 255) as u8
+        }
     })
 }
 
