@@ -9,17 +9,46 @@ mod pixel_access;
 use font::Font;
 use imaging_core::ImagingCore;
 use imaging_draw::ImagingDraw;
-use imaging_path::ImagingPath;
+use imaging_path::{ImagingOutline, ImagingPath};
 use pixel_access::PixelAccess;
 
 #[pyfunction]
-fn draw(im: Py<imaging_core::ImagingCore>) -> imaging_draw::ImagingDraw {
+#[pyo3(signature = (im, blend=None))]
+fn draw(im: Py<imaging_core::ImagingCore>, blend: Option<i32>) -> imaging_draw::ImagingDraw {
+    let _ = blend;
     imaging_draw::ImagingDraw { im }
 }
 
+fn extract_size(size: &Bound<'_, PyAny>) -> PyResult<(u32, u32)> {
+    if let Ok((w, h)) = size.extract::<(i32, i32)>() {
+        if w < 0 || h < 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "image size must be positive",
+            ));
+        }
+        return Ok((w as u32, h as u32));
+    }
+    if let Ok(v) = size.extract::<Vec<i32>>() {
+        if v.len() >= 2 {
+            let w = v[0];
+            let h = v[1];
+            if w < 0 || h < 0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "image size must be positive",
+                ));
+            }
+            return Ok((w as u32, h as u32));
+        }
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "size must be a 2-tuple or 2-element list of ints",
+    ))
+}
+
 #[pyfunction]
-fn new(mode: &str, size: (u32, u32)) -> PyResult<imaging_core::ImagingCore> {
-    let handle = pil_rust_core::new_image(mode, size.0, size.1, &[0, 0, 0, 0])
+fn new(mode: &str, size: &Bound<'_, PyAny>) -> PyResult<imaging_core::ImagingCore> {
+    let (w, h) = extract_size(size)?;
+    let handle = pil_rust_core::new_image(mode, w, h, &[0, 0, 0, 0])
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Ok(imaging_core::ImagingCore { handle })
 }
@@ -27,18 +56,23 @@ fn new(mode: &str, size: (u32, u32)) -> PyResult<imaging_core::ImagingCore> {
 #[pyfunction]
 fn fill(
     mode: &str,
-    size: (u32, u32),
+    size: &Bound<'_, PyAny>,
     color: &Bound<'_, PyAny>,
 ) -> PyResult<imaging_core::ImagingCore> {
+    let (w, h) = extract_size(size)?;
     let bytes = extract_color_bytes(color, mode)?;
-    let handle = pil_rust_core::new_image(mode, size.0, size.1, &bytes)
+    let handle = pil_rust_core::new_image(mode, w, h, &bytes)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Ok(imaging_core::ImagingCore { handle })
 }
 
-fn extract_color_bytes(color: &Bound<'_, PyAny>, _mode: &str) -> PyResult<Vec<u8>> {
+pub fn extract_color_bytes(color: &Bound<'_, PyAny>, _mode: &str) -> PyResult<Vec<u8>> {
     if let Ok(v) = color.extract::<u8>() {
         return Ok(vec![v, v, v, 255]);
+    }
+    if let Ok(v) = color.extract::<f64>() {
+        let b = v.clamp(0.0, 255.0) as u8;
+        return Ok(vec![b, b, b, 255]);
     }
     if let Ok(t) = color.extract::<(u8, u8, u8, u8)>() {
         return Ok(vec![t.0, t.1, t.2, t.3]);
@@ -47,7 +81,14 @@ fn extract_color_bytes(color: &Bound<'_, PyAny>, _mode: &str) -> PyResult<Vec<u8
         return Ok(vec![t.0, t.1, t.2, 255]);
     }
     if let Ok(t) = color.extract::<(u8, u8)>() {
-        return Ok(vec![t.0, t.0, t.0, t.1]);
+        // LA tuple: color[0]=L, color[1]=A (putpixel reads [0] and [1] for LumaA)
+        return Ok(vec![t.0, t.1, t.0, t.1]);
+    }
+    // 1-element tuple e.g. (5,) — treat as grayscale
+    if let Ok(v) = color.extract::<Vec<u8>>() {
+        if let Some(&b) = v.first() {
+            return Ok(vec![b, b, b, 255]);
+        }
     }
     if let Ok(v) = color.extract::<i32>() {
         return Ok(vec![
@@ -63,6 +104,7 @@ fn extract_color_bytes(color: &Bound<'_, PyAny>, _mode: &str) -> PyResult<Vec<u8
 }
 
 #[pyfunction]
+#[pyo3(signature = (mode, *bands))]
 fn merge(
     mode: &str,
     bands: Vec<PyRef<'_, imaging_core::ImagingCore>>,
@@ -87,13 +129,12 @@ fn blend(
 #[pyfunction]
 #[pyo3(name = "alpha_composite")]
 fn alpha_composite_module(
-    dst: &mut imaging_core::ImagingCore,
+    dst: &imaging_core::ImagingCore,
     src: &imaging_core::ImagingCore,
-) -> PyResult<()> {
-    let result = pil_rust_core::alpha_composite(&dst.handle, &src.handle)
+) -> PyResult<imaging_core::ImagingCore> {
+    let handle = pil_rust_core::alpha_composite(&dst.handle, &src.handle)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    dst.handle = result;
-    Ok(())
+    Ok(imaging_core::ImagingCore { handle })
 }
 
 #[pyfunction]
@@ -131,11 +172,18 @@ fn save_to_bytes<'py>(
 }
 
 #[pyfunction]
-fn path(coords: &Bound<'_, PyAny>) -> PyResult<imaging_path::ImagingPath> {
+#[pyo3(signature = (coords=None))]
+fn path(coords: Option<&Bound<'_, PyAny>>) -> PyResult<imaging_path::ImagingPath> {
+    let Some(coords) = coords else {
+        return Ok(imaging_path::ImagingPath { coords: vec![] });
+    };
     let pts: Vec<(f32, f32)> = if let Ok(flat) = coords.extract::<Vec<f32>>() {
-        flat.chunks(2)
-            .map(|c| (c[0], c.get(1).copied().unwrap_or(0.0)))
-            .collect()
+        if flat.len() % 2 != 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "incorrect number of coordinates",
+            ));
+        }
+        flat.chunks(2).map(|c| (c[0], c[1])).collect()
     } else if let Ok(pairs) = coords.extract::<Vec<(f32, f32)>>() {
         pairs
     } else {
@@ -147,8 +195,35 @@ fn path(coords: &Bound<'_, PyAny>) -> PyResult<imaging_path::ImagingPath> {
 }
 
 #[pyfunction]
-fn new_block(mode: &str, size: (u32, u32)) -> PyResult<imaging_core::ImagingCore> {
+fn new_block(mode: &str, size: &Bound<'_, PyAny>) -> PyResult<imaging_core::ImagingCore> {
     new(mode, size)
+}
+
+#[pyfunction]
+fn outline() -> imaging_path::ImagingOutline {
+    imaging_path::ImagingOutline::new()
+}
+
+#[pyfunction]
+#[pyo3(signature = (size, _xy, _color))]
+fn effect_mandelbrot(
+    size: &Bound<'_, PyAny>,
+    _xy: &Bound<'_, PyAny>,
+    _color: i32,
+) -> PyResult<imaging_core::ImagingCore> {
+    let (w, h) = extract_size(size)?;
+    let handle = pil_rust_core::new_image("RGB", w, h, &[0, 0, 0, 255])
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
+}
+
+#[pyfunction]
+#[pyo3(signature = (size, _seed))]
+fn effect_noise(size: &Bound<'_, PyAny>, _seed: i32) -> PyResult<imaging_core::ImagingCore> {
+    let (w, h) = extract_size(size)?;
+    let handle = pil_rust_core::new_image("L", w, h, &[128, 128, 128, 255])
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(imaging_core::ImagingCore { handle })
 }
 
 #[pyfunction]
@@ -204,6 +279,7 @@ fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ImagingDraw>()?;
     m.add_class::<Font>()?;
     m.add_class::<ImagingPath>()?;
+    m.add_class::<ImagingOutline>()?;
     m.add_function(wrap_pyfunction!(draw, m)?)?;
     m.add_function(wrap_pyfunction!(getfont, m)?)?;
     m.add_function(wrap_pyfunction!(font_load_py, m)?)?;
@@ -218,6 +294,9 @@ fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(save_to_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(path, m)?)?;
     m.add_function(wrap_pyfunction!(new_block, m)?)?;
+    m.add_function(wrap_pyfunction!(outline, m)?)?;
+    m.add_function(wrap_pyfunction!(effect_mandelbrot, m)?)?;
+    m.add_function(wrap_pyfunction!(effect_noise, m)?)?;
     m.add_function(wrap_pyfunction!(clear_cache, m)?)?;
     m.add_function(wrap_pyfunction!(set_alignment, m)?)?;
     m.add_function(wrap_pyfunction!(set_block_size, m)?)?;

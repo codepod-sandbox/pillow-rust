@@ -130,7 +130,8 @@ def test_radial_gradient():
     assert rg.size == (256, 256)
     center = rg.getpixel((128, 128))
     corner = rg.getpixel((0, 0))
-    assert center < corner
+    # Pillow formula: sqrt(x*x + y*y) — center(128,128)~181 > corner(0,0)=0
+    assert center > corner
 
 
 if __name__ == "__main__":

@@ -551,6 +551,31 @@ class Image:
         self._im = im
 
     @property
+    def _handle(self) -> core.ImagingCore | None:
+        """Return the native image handle, or None if the image has been closed."""
+        if self._im is None or isinstance(self._im, DeferredError):
+            return None
+        return self._im
+
+    @property
+    def n_frames(self) -> int:
+        """Number of frames in the image (1 for non-animated images)."""
+        return getattr(self, "_n_frames", 1)
+
+    @n_frames.setter
+    def n_frames(self, value: int) -> None:
+        self._n_frames = value
+
+    @property
+    def is_animated(self) -> bool:
+        """True if the image has more than one frame."""
+        return getattr(self, "_is_animated", self.n_frames > 1)
+
+    @is_animated.setter
+    def is_animated(self, value: bool) -> None:
+        self._is_animated = value
+
+    @property
     def width(self) -> int:
         return self.size[0]
 
@@ -664,6 +689,10 @@ class Image:
         )
 
     def __repr__(self) -> str:
+        if self._im is None or isinstance(self._im, DeferredError):
+            return (
+                f"<{self.__class__.__module__}.{self.__class__.__name__} image (closed)>"
+            )
         return (
             f"<{self.__class__.__module__}.{self.__class__.__name__} "
             f"image mode={self.mode} size={self.size[0]}x{self.size[1]} "
@@ -781,6 +810,10 @@ class Image:
 
         if self.width == 0 or self.height == 0:
             return b""
+
+        # Fast path: use ImagingCore.tobytes() directly for raw encoding
+        if encoder_name == "raw" and encoder_args in (self.mode, (self.mode,)):
+            return self.im.tobytes()
 
         # unpack data
         e = _getencoder(self.mode, encoder_name, encoder_args)
@@ -982,6 +1015,9 @@ class Image:
             # matrix conversion
             if mode not in ("L", "RGB"):
                 msg = "illegal conversion"
+                raise ValueError(msg)
+            if self.mode != "RGB":
+                msg = "matrix conversion requires RGB input"
                 raise ValueError(msg)
             im = self.im.convert_matrix(mode, matrix)
             new_im = self._new(im)
@@ -2289,6 +2325,10 @@ class Image:
             box = (0, 0) + self.size
 
         size = tuple(size)
+        if size[0] <= 0 or size[1] <= 0:
+            msg = "image size is not positive"
+            raise ValueError(msg)
+
         if self.size == size and box == (0, 0) + self.size:
             return self.copy()
 
@@ -2342,8 +2382,23 @@ class Image:
         if not isinstance(factor, (list, tuple)):
             factor = (factor, factor)
 
+        if factor[0] <= 0 or factor[1] <= 0:
+            msg = "factor must be greater than 0"
+            raise ValueError(msg)
+
         if box is None:
             box = (0, 0) + self.size
+        else:
+            x0, y0, x1, y1 = box
+            if x0 < 0 or y0 < 0:
+                msg = "box offset is negative"
+                raise ValueError(msg)
+            if x1 > self.size[0] or y1 > self.size[1]:
+                msg = "box is out of image bounds"
+                raise ValueError(msg)
+            if x0 >= x1 or y0 >= y1:
+                msg = "box is empty"
+                raise ValueError(msg)
 
         if factor == (1, 1) and box == (0, 0) + self.size:
             return self.copy()
@@ -3634,6 +3689,9 @@ def alpha_composite(im1: Image, im2: Image) -> Image:
 
     im1.load()
     im2.load()
+    if im1.mode not in ("RGBA", "LA", "RGBa", "La"):
+        msg = f"images do not match: {im1.mode}"
+        raise ValueError(msg)
     return im1._new(core.alpha_composite(im1.im, im2.im))
 
 
@@ -4284,3 +4342,21 @@ class Exif(_ExifBase):
         if self._info is not None:
             keys.update(self._info)
         return iter(keys)
+
+
+# ---------------------------------------------------------------------------
+# Register Python-level 'raw' decoder and encoder so format plugins that use
+# the 'raw' codec (e.g. PpmImagePlugin) work without the C-level
+# _imaging.raw_decoder / _imaging.raw_encoder attributes.
+# This is registered at module-load time after all classes are defined.
+def _register_raw_codecs() -> None:
+    try:
+        from . import _RawCodecs as _rc
+        from . import ImageFile as _ImageFile  # noqa: F401 (needed for type check only)
+        DECODERS.setdefault("raw", _rc.RawDecoder)
+        ENCODERS.setdefault("raw", _rc.RawEncoder)
+    except Exception:
+        pass
+
+
+_register_raw_codecs()

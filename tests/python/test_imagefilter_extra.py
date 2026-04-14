@@ -85,8 +85,9 @@ def test_kernel():
     assert out.size == im.size
 
 def test_kernel_wrong_size():
+    # (5, 5) needs 25 coefficients; passing 20 should raise ValueError
     with pytest.raises(ValueError):
-        ImageFilter.Kernel((5, 5), [1] * 25)
+        ImageFilter.Kernel((5, 5), [1] * 20)
 
 
 if __name__ == "__main__":

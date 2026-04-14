@@ -19,7 +19,8 @@ fn extract_rgba(color: &Bound<'_, PyAny>, mode: &str) -> PyResult<[u8; 4]> {
         return Ok([t.0, t.1, t.2, 255]);
     }
     if let Ok(t) = color.extract::<(u8, u8)>() {
-        return Ok([t.0, t.0, t.0, t.1]);
+        // LA tuple: [L, A] — putpixel reads [0] and [1] for LumaA
+        return Ok([t.0, t.1, t.0, t.1]);
     }
     Err(pyo3::exceptions::PyTypeError::new_err(format!(
         "cannot convert color for mode {mode}"
@@ -31,12 +32,20 @@ impl PixelAccess {
     fn __getitem__<'py>(&self, py: Python<'py>, xy: (i32, i32)) -> PyResult<Bound<'py, PyAny>> {
         let im = self.im.borrow(py);
         let (w, h) = pil_rust_core::size(&im.handle);
-        if xy.0 < 0 || xy.1 < 0 || xy.0 >= w as i32 || xy.1 >= h as i32 {
+        let mut x = xy.0;
+        let mut y = xy.1;
+        if x < 0 {
+            x += w as i32;
+        }
+        if y < 0 {
+            y += h as i32;
+        }
+        if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
             return Err(pyo3::exceptions::PyIndexError::new_err(
                 "pixel index out of range",
             ));
         }
-        let px = pil_rust_core::getpixel(&im.handle, xy.0 as u32, xy.1 as u32);
+        let px = pil_rust_core::getpixel(&im.handle, x as u32, y as u32);
         let mode = pil_rust_core::mode(&im.handle);
         let obj: Bound<'py, PyAny> = match mode {
             "L" => px[0].into_pyobject(py)?.into_any(),
@@ -57,14 +66,22 @@ impl PixelAccess {
         let py = color.py();
         let mut im = self.im.borrow_mut(py);
         let (w, h) = pil_rust_core::size(&im.handle);
-        if xy.0 < 0 || xy.1 < 0 || xy.0 >= w as i32 || xy.1 >= h as i32 {
+        let mut x = xy.0;
+        let mut y = xy.1;
+        if x < 0 {
+            x += w as i32;
+        }
+        if y < 0 {
+            y += h as i32;
+        }
+        if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
             return Err(pyo3::exceptions::PyIndexError::new_err(
                 "pixel index out of range",
             ));
         }
         let mode = pil_rust_core::mode(&im.handle).to_owned();
         let rgba = extract_rgba(color, &mode)?;
-        pil_rust_core::putpixel(&mut im.handle, xy.0 as u32, xy.1 as u32, rgba);
+        pil_rust_core::putpixel(&mut im.handle, x as u32, y as u32, rgba);
         Ok(())
     }
 }

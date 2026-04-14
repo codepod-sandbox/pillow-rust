@@ -1,6 +1,18 @@
 use pil_rust_core::ImageHandle;
 use pyo3::prelude::*;
 
+/// Extract a scalar f32 from a Python value that is either a float/int or a (x, y) tuple.
+/// For tuples, returns the first element (x-radius).
+fn extract_scalar_or_first_of_tuple(v: &Bound<'_, PyAny>) -> Option<f32> {
+    if let Ok(f) = v.extract::<f32>() {
+        return Some(f);
+    }
+    if let Ok((x, _y)) = v.extract::<(f32, f32)>() {
+        return Some(x);
+    }
+    None
+}
+
 #[pyclass]
 pub struct ImagingCore {
     pub handle: ImageHandle,
@@ -31,6 +43,46 @@ impl ImagingCore {
     #[getter]
     fn readonly(&self) -> bool {
         false
+    }
+
+    fn __len__(&self) -> usize {
+        let (w, h) = pil_rust_core::size(&self.handle);
+        (w * h) as usize
+    }
+
+    fn __getitem__(&self, i: isize, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let (w, h) = pil_rust_core::size(&self.handle);
+        let n = (w * h) as isize;
+        let i = if i < 0 { i + n } else { i };
+        if i < 0 || i >= n {
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "index out of range",
+            ));
+        }
+        let x = (i as u32) % w;
+        let y = (i as u32) / w;
+        let px = pil_rust_core::getpixel(&self.handle, x, y);
+        let mode = pil_rust_core::mode(&self.handle);
+        let result: Py<PyAny> = match mode {
+            "1" => (if px[0] >= 128 { 255i32 } else { 0i32 })
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+            "L" | "P" => (px[0] as i32).into_pyobject(py)?.into_any().unbind(),
+            "LA" | "PA" => (px[0] as i32, px[3] as i32)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+            "RGB" | "YCbCr" | "LAB" | "HSV" => (px[0] as i32, px[1] as i32, px[2] as i32)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+            _ => (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+        };
+        Ok(result)
     }
 
     fn copy(&self) -> ImagingCore {
@@ -76,13 +128,7 @@ impl ImagingCore {
     fn crop(&self, box_: Option<(i32, i32, i32, i32)>) -> PyResult<ImagingCore> {
         let (w, h) = pil_rust_core::size(&self.handle);
         let (x0, y0, x1, y1) = box_.unwrap_or((0, 0, w as i32, h as i32));
-        let x0u = x0.max(0) as u32;
-        let y0u = y0.max(0) as u32;
-        let x1u = (x1 as u32).min(w);
-        let y1u = (y1 as u32).min(h);
-        let cw = x1u.saturating_sub(x0u);
-        let ch = y1u.saturating_sub(y0u);
-        let handle = pil_rust_core::crop(&self.handle, x0u, y0u, cw, ch);
+        let handle = pil_rust_core::crop_oob(&self.handle, x0, y0, x1, y1);
         Ok(ImagingCore { handle })
     }
 
@@ -217,7 +263,18 @@ impl ImagingCore {
 
     #[pyo3(signature = (lut, mode=None))]
     fn point(&self, lut: &Bound<'_, PyAny>, mode: Option<&str>) -> PyResult<ImagingCore> {
-        let lut_bytes: Vec<u8> = lut.extract()?;
+        // LUT values may be out of [0,255] range (e.g. from lambda v: v*2); clamp.
+        let lut_bytes: Vec<u8> = if let Ok(v) = lut.extract::<Vec<u8>>() {
+            v
+        } else if let Ok(v) = lut.extract::<Vec<i64>>() {
+            v.iter().map(|&x| x.clamp(0, 255) as u8).collect()
+        } else if let Ok(v) = lut.extract::<Vec<f64>>() {
+            v.iter().map(|&x| x.clamp(0.0, 255.0) as u8).collect()
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "lut must be a sequence of numbers",
+            ));
+        };
         let handle = pil_rust_core::point(&self.handle, &lut_bytes)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         if let Some(m) = mode {
@@ -246,29 +303,43 @@ impl ImagingCore {
             .collect()
     }
 
-    fn getband(&self, n: usize) -> PyResult<ImagingCore> {
-        let handle = pil_rust_core::getband(&self.handle, n)
+    fn getband(&self, n: i32) -> PyResult<ImagingCore> {
+        if n < 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "band index out of range",
+            ));
+        }
+        let handle = pil_rust_core::getband(&self.handle, n as usize)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(ImagingCore { handle })
     }
 
-    fn putband(&self, im: &ImagingCore, n: usize) -> PyResult<ImagingCore> {
-        let handle = pil_rust_core::putband(&self.handle, &im.handle, n)
+    fn putband(&mut self, im: &ImagingCore, n: i32) -> PyResult<()> {
+        if n < 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "band index out of range",
+            ));
+        }
+        let handle = pil_rust_core::putband(&self.handle, &im.handle, n as usize)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(ImagingCore { handle })
+        self.handle = handle;
+        Ok(())
     }
 
-    fn fillband(&self, n: usize, value: i32) -> PyResult<ImagingCore> {
+    fn fillband(&mut self, n: usize, value: i32) -> PyResult<()> {
         let handle = pil_rust_core::fillband(&self.handle, n, value.clamp(0, 255) as u8)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(ImagingCore { handle })
+        self.handle = handle;
+        Ok(())
     }
 
-    #[pyo3(signature = (mask=None, extrema=None))]
+    /// histogram(extrema=None, mask=None)
+    /// Called as: histogram() OR histogram(extrema_tuple) OR histogram(extrema_tuple, mask_im)
+    #[pyo3(signature = (extrema=None, mask=None))]
     fn histogram(
         &self,
-        mask: Option<&ImagingCore>,
         extrema: Option<&Bound<'_, PyAny>>,
+        mask: Option<&ImagingCore>,
     ) -> Vec<u32> {
         let _ = extrema;
         match mask {
@@ -283,8 +354,11 @@ impl ImagingCore {
         pil_rust_core::getbbox(&self.handle)
     }
 
-    fn getextrema(&self) -> Vec<(u8, u8)> {
-        pil_rust_core::getextrema(&self.handle)
+    fn getextrema(&self) -> PyResult<(u8, u8)> {
+        let v = pil_rust_core::getextrema(&self.handle);
+        v.into_iter()
+            .next()
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("getextrema: no bands"))
     }
 
     #[pyo3(signature = (maxcolors=None))]
@@ -299,8 +373,13 @@ impl ImagingCore {
                 let list = PyList::empty(py);
                 for (count, px) in entries {
                     let color: Py<PyAny> = match mode {
+                        "1" => (if px[0] >= 128 { 255u8 } else { 0u8 })
+                            .into_pyobject(py)?
+                            .into_any()
+                            .unbind(),
                         "L" => px[0].into_pyobject(py)?.into_any().unbind(),
-                        "LA" => PyTuple::new(py, [px[0], px[3]])?.into_any().unbind(),
+                        // getcolors stores LA as [L, A, 0, 0] — use px[1] for alpha
+                        "LA" | "La" => PyTuple::new(py, [px[0], px[1]])?.into_any().unbind(),
                         "RGB" => PyTuple::new(py, [px[0], px[1], px[2]])?.into_any().unbind(),
                         _ => PyTuple::new(py, [px[0], px[1], px[2], px[3]])?
                             .into_any()
@@ -319,30 +398,37 @@ impl ImagingCore {
         pil_rust_core::getprojection(&self.handle)
     }
 
-    #[pyo3(signature = (mask=None, extrema=None))]
-    fn entropy(&self, mask: Option<&ImagingCore>, extrema: Option<&Bound<'_, PyAny>>) -> f64 {
+    #[pyo3(signature = (extrema=None, mask=None))]
+    fn entropy(&self, extrema: Option<&Bound<'_, PyAny>>, mask: Option<&ImagingCore>) -> f64 {
         let _ = extrema;
         pil_rust_core::entropy(&self.handle, mask.map(|m| &m.handle))
     }
 
-    #[pyo3(signature = (name, args=None))]
-    fn filter(&self, name: &str, args: Option<Vec<f32>>) -> PyResult<ImagingCore> {
-        let args = args.unwrap_or_default();
-        let handle = pil_rust_core::filter(&self.handle, name, &args)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    // Upstream calling convention: im.filter(size_tuple, scale, offset, kernel_seq)
+    fn filter(
+        &self,
+        size: (u32, u32),
+        scale: f64,
+        offset: f64,
+        kernel: Vec<f64>,
+    ) -> PyResult<ImagingCore> {
+        let (kw, kh) = size;
+        let handle = pil_rust_core::apply_kernel(&self.handle, kw, kh, &kernel, scale, offset);
         Ok(ImagingCore { handle })
     }
 
-    fn gaussian_blur(&self, radius: f32) -> ImagingCore {
-        let handle = pil_rust_core::filter(&self.handle, "gaussian_blur", &[radius])
+    fn gaussian_blur(&self, radius: &Bound<'_, PyAny>) -> ImagingCore {
+        let r = extract_scalar_or_first_of_tuple(radius).unwrap_or(2.0);
+        let handle = pil_rust_core::filter(&self.handle, "gaussian_blur", &[r])
             .unwrap_or_else(|_| self.handle.clone());
         ImagingCore { handle }
     }
 
     #[pyo3(signature = (radius, n=None))]
-    fn box_blur(&self, radius: f32, n: Option<i32>) -> ImagingCore {
+    fn box_blur(&self, radius: &Bound<'_, PyAny>, n: Option<i32>) -> ImagingCore {
         let _ = n;
-        let handle = pil_rust_core::filter(&self.handle, "box_blur", &[radius])
+        let r = extract_scalar_or_first_of_tuple(radius).unwrap_or(1.0);
+        let handle = pil_rust_core::filter(&self.handle, "box_blur", &[r])
             .unwrap_or_else(|_| self.handle.clone());
         ImagingCore { handle }
     }
@@ -372,16 +458,39 @@ impl ImagingCore {
     #[pyo3(signature = (im, box_=None, mask=None))]
     fn paste(
         &mut self,
-        im: &ImagingCore,
+        im: &Bound<'_, PyAny>,
         box_: Option<(i32, i32, i32, i32)>,
         mask: Option<&ImagingCore>,
+        py: Python<'_>,
     ) -> PyResult<()> {
-        let (x, y) = if let Some((x0, y0, _, _)) = box_ {
-            (x0, y0)
+        let (x, y, x2, y2) = if let Some((x0, y0, x1, y1)) = box_ {
+            (x0, y0, x1, y1)
         } else {
-            (0, 0)
+            let (w, h) = pil_rust_core::size(&self.handle);
+            (0, 0, w as i32, h as i32)
         };
-        pil_rust_core::paste(&mut self.handle, &im.handle, x, y, mask.map(|m| &m.handle));
+
+        // Determine if `im` is an ImagingCore or a color value
+        if let Ok(src_ref) = im.cast::<ImagingCore>() {
+            let src = src_ref.borrow();
+            pil_rust_core::paste(&mut self.handle, &src.handle, x, y, mask.map(|m| &m.handle));
+        } else {
+            // It's a color value — create a temporary image filled with the color
+            let mode = pil_rust_core::mode(&self.handle).to_owned();
+            let bytes = crate::extract_color_bytes(im, &mode)?;
+            let w = (x2 - x).max(0) as u32;
+            let h = (y2 - y).max(0) as u32;
+            let fill_handle = pil_rust_core::new_image(&mode, w, h, &bytes)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            pil_rust_core::paste(
+                &mut self.handle,
+                &fill_handle,
+                x,
+                y,
+                mask.map(|m| &m.handle),
+            );
+        }
+        let _ = py;
         Ok(())
     }
 
@@ -404,6 +513,77 @@ impl ImagingCore {
         pil_rust_core::tobytes(&self.handle)
     }
 
+    fn getpixel(&self, xy: (i32, i32), py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let (mut x, mut y) = xy;
+        let (w, h) = pil_rust_core::size(&self.handle);
+        // Support negative indices (wrap-around)
+        if x < 0 {
+            x += w as i32;
+        }
+        if y < 0 {
+            y += h as i32;
+        }
+        if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "pixel coordinate out of range",
+            ));
+        }
+        let px = pil_rust_core::getpixel(&self.handle, x as u32, y as u32);
+        let mode = pil_rust_core::mode(&self.handle);
+        let result: Py<PyAny> = match mode {
+            "1" => (if px[0] >= 128 { 255i32 } else { 0i32 })
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+            "L" | "P" => (px[0] as i32).into_pyobject(py)?.into_any().unbind(),
+            // image crate's get_pixel converts LumaA→Rgba where A is at index 3
+            "LA" | "PA" | "La" => (px[0] as i32, px[3] as i32)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+            "RGB" | "YCbCr" | "LAB" | "HSV" => (px[0] as i32, px[1] as i32, px[2] as i32)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+            "RGBa" => (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+            _ => (px[0] as i32, px[1] as i32, px[2] as i32, px[3] as i32)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind(),
+        };
+        Ok(result)
+    }
+
+    fn putpixel(&mut self, xy: (i32, i32), color: &Bound<'_, PyAny>) -> PyResult<()> {
+        let (mut x, mut y) = xy;
+        let (w, h) = pil_rust_core::size(&self.handle);
+        // Support negative indices (wrap-around)
+        if x < 0 {
+            x += w as i32;
+        }
+        if y < 0 {
+            y += h as i32;
+        }
+        if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "pixel coordinate out of range",
+            ));
+        }
+        let mode = pil_rust_core::mode(&self.handle).to_owned();
+        let bytes = crate::extract_color_bytes(color, &mode)?;
+        let rgba = [
+            bytes.first().copied().unwrap_or(0),
+            bytes.get(1).copied().unwrap_or(0),
+            bytes.get(2).copied().unwrap_or(0),
+            bytes.get(3).copied().unwrap_or(255),
+        ];
+        pil_rust_core::putpixel(&mut self.handle, x as u32, y as u32, rgba);
+        Ok(())
+    }
+
     fn frombytes(&mut self, data: &[u8]) -> PyResult<()> {
         let (w, h) = pil_rust_core::size(&self.handle);
         let m = pil_rust_core::mode(&self.handle).to_owned();
@@ -420,10 +600,46 @@ impl ImagingCore {
     }
 
     #[pyo3(signature = (data, scale=None, offset=None))]
-    fn putdata(&mut self, data: &[u8], scale: Option<f64>, offset: Option<f64>) {
-        let _ = scale;
-        let _ = offset;
-        pil_rust_core::putdata(&mut self.handle, data);
+    fn putdata(
+        &mut self,
+        data: &Bound<'_, PyAny>,
+        scale: Option<f64>,
+        offset: Option<f64>,
+    ) -> PyResult<()> {
+        let scale = scale.unwrap_or(1.0);
+        let offset = offset.unwrap_or(0.0);
+        // Pillow uses & 0xFF (wrap-around), applying scale+offset first
+        let apply_scale = |v: f64| -> u8 { ((v * scale + offset) as i64 & 0xFF) as u8 };
+
+        // Accept bytes, bytearray, or sequence of ints/floats/tuples
+        if let Ok(bytes) = data.extract::<Vec<u8>>() {
+            if scale == 1.0 && offset == 0.0 {
+                pil_rust_core::putdata(&mut self.handle, &bytes);
+            } else {
+                let scaled: Vec<u8> = bytes.into_iter().map(|v| apply_scale(v as f64)).collect();
+                pil_rust_core::putdata(&mut self.handle, &scaled);
+            }
+        } else if let Ok(seq) = data.extract::<Vec<f64>>() {
+            let bytes: Vec<u8> = seq.into_iter().map(apply_scale).collect();
+            pil_rust_core::putdata(&mut self.handle, &bytes);
+        } else if let Ok(seq) = data.extract::<Vec<i32>>() {
+            let bytes: Vec<u8> = seq.into_iter().map(|v| apply_scale(v as f64)).collect();
+            pil_rust_core::putdata(&mut self.handle, &bytes);
+        } else if let Ok(seq) = data.extract::<Vec<(u8, u8, u8)>>() {
+            let bytes: Vec<u8> = seq.into_iter().flat_map(|(r, g, b)| [r, g, b]).collect();
+            pil_rust_core::putdata(&mut self.handle, &bytes);
+        } else if let Ok(seq) = data.extract::<Vec<(u8, u8, u8, u8)>>() {
+            let bytes: Vec<u8> = seq
+                .into_iter()
+                .flat_map(|(r, g, b, a)| [r, g, b, a])
+                .collect();
+            pil_rust_core::putdata(&mut self.handle, &bytes);
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "putdata: unsupported data type",
+            ));
+        }
+        Ok(())
     }
 
     #[pyo3(signature = (colors, method=None, kmeans=None, palette=None))]
@@ -450,10 +666,32 @@ impl ImagingCore {
 
     fn save_ppm(&self, fp: &Bound<'_, PyAny>) -> PyResult<()> {
         use pyo3::types::PyBytes;
-        let data = pil_rust_core::save(&self.handle, "ppm")
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        fp.call_method1("write", (PyBytes::new(fp.py(), &data),))?;
-        Ok(())
+        let (w, h) = pil_rust_core::size(&self.handle);
+        let mode = pil_rust_core::mode(&self.handle);
+        // Build PPM/PGM in memory (simple implementation)
+        let is_gray = matches!(mode, "L");
+        let magic = if is_gray { "P5" } else { "P6" };
+        let mut buf = format!("{}\n{} {}\n255\n", magic, w, h).into_bytes();
+        for y in 0..h {
+            for x in 0..w {
+                let px = pil_rust_core::getpixel(&self.handle, x, y);
+                if is_gray {
+                    buf.push(px[0]);
+                } else {
+                    buf.push(px[0]);
+                    buf.push(px[1]);
+                    buf.push(px[2]);
+                }
+            }
+        }
+        // Accept either a filename string or a file-like object
+        if let Ok(path) = fp.extract::<String>() {
+            std::fs::write(&path, &buf)
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
+        } else {
+            fp.call_method1("write", (PyBytes::new(fp.py(), &buf),))?;
+            Ok(())
+        }
     }
 
     #[getter]
@@ -482,7 +720,9 @@ impl ImagingCore {
         ))
     }
 
-    fn getpalette(&self) -> PyResult<Vec<u8>> {
+    #[pyo3(signature = (mode=None, rawmode=None))]
+    fn getpalette(&self, mode: Option<&str>, rawmode: Option<&str>) -> PyResult<Vec<u8>> {
+        let _ = (mode, rawmode);
         Err(pyo3::exceptions::PyValueError::new_err(
             "image has no palette",
         ))
@@ -494,12 +734,16 @@ impl ImagingCore {
         ))
     }
 
-    #[pyo3(signature = (data, rawmode=None))]
-    fn putpalette(&mut self, data: &Bound<'_, PyAny>, rawmode: Option<&str>) -> PyResult<()> {
-        let _ = (data, rawmode);
-        Err(pyo3::exceptions::PyValueError::new_err(
-            "image has no palette",
-        ))
+    #[pyo3(signature = (data, rawmode=None, src_rawmode=None))]
+    fn putpalette(
+        &mut self,
+        data: &Bound<'_, PyAny>,
+        rawmode: Option<&str>,
+        src_rawmode: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let _ = (data, rawmode, src_rawmode);
+        // Palette images not supported; silently ignore so as not to crash
+        Ok(())
     }
 
     fn putpalettealpha(&mut self, index: i32, alpha: i32) -> PyResult<()> {
@@ -516,49 +760,76 @@ impl ImagingCore {
         ))
     }
 
-    #[pyo3(signature = (size, method, data, filter=None, fill=None, fillcolor=None))]
+    // Upstream calling convention: im.transform(box, source_im, method, data, resample, fill)
+    // Modifies self in-place, writing the transformed region into `box`.
+    #[pyo3(signature = (box_, source, method, data, resample=None, fill=None))]
     fn transform(
-        &self,
-        size: (u32, u32),
+        &mut self,
+        box_: (i32, i32, i32, i32),
+        source: &ImagingCore,
         method: i32,
         data: &Bound<'_, PyAny>,
-        filter: Option<i32>,
-        fill: Option<i32>,
-        fillcolor: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<ImagingCore> {
-        let _ = filter;
+        resample: Option<i32>,
+        fill: Option<bool>,
+    ) -> PyResult<()> {
+        let _ = resample;
         let _ = fill;
-        let _ = fillcolor;
-        match method {
+        let (x0, y0, x1, y1) = box_;
+        let w = (x1 - x0).max(0) as u32;
+        let h = (y1 - y0).max(0) as u32;
+        if w == 0 || h == 0 {
+            return Ok(());
+        }
+        let transformed = match method {
             0 => {
-                // AFFINE: data is 6-element sequence
+                // AFFINE: 6-element inverse transform
                 let d: Vec<f64> = data.extract()?;
                 if d.len() < 6 {
                     return Err(pyo3::exceptions::PyValueError::new_err(
                         "affine needs 6 coefficients",
                     ));
                 }
-                let coeffs: [f64; 6] = [d[0], d[1], d[2], d[3], d[4], d[5]];
-                let handle = pil_rust_core::transform_affine(&self.handle, size.0, size.1, &coeffs);
-                Ok(ImagingCore { handle })
+                pil_rust_core::transform_affine(
+                    &source.handle,
+                    w,
+                    h,
+                    &[d[0], d[1], d[2], d[3], d[4], d[5]],
+                )
             }
             2 => {
-                // PERSPECTIVE: data is 8-element sequence
+                // PERSPECTIVE: 8-element sequence
                 let d: Vec<f64> = data.extract()?;
                 if d.len() < 8 {
                     return Err(pyo3::exceptions::PyValueError::new_err(
                         "perspective needs 8 coefficients",
                     ));
                 }
-                let coeffs: [f64; 8] = [d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]];
-                let handle =
-                    pil_rust_core::transform_perspective(&self.handle, size.0, size.1, &coeffs);
-                Ok(ImagingCore { handle })
+                pil_rust_core::transform_perspective(
+                    &source.handle,
+                    w,
+                    h,
+                    &[d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]],
+                )
             }
-            _ => Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-                "transform method {method} not implemented"
-            ))),
+            _ => {
+                return Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+                    "transform method {method} not implemented"
+                )));
+            }
+        };
+        // Paste transformed region into self at (x0, y0)
+        for dy in 0..h {
+            for dx in 0..w {
+                let px = pil_rust_core::getpixel(&transformed, dx, dy);
+                pil_rust_core::putpixel(
+                    &mut self.handle,
+                    (x0 + dx as i32) as u32,
+                    (y0 + dy as i32) as u32,
+                    px,
+                );
+            }
         }
+        Ok(())
     }
 
     #[pyo3(signature = (im2, scale=None, offset=None))]

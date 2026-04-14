@@ -215,10 +215,10 @@ def test_transpose_enum():
 
 
 def test_resampling_enum():
-    assert Image.Resampling.NEAREST == "nearest"
-    assert Image.Resampling.BILINEAR == "bilinear"
-    assert Image.Resampling.BICUBIC == "bicubic"
-    assert Image.Resampling.LANCZOS == "lanczos"
+    assert Image.Resampling.NEAREST.name.lower() == "nearest"
+    assert Image.Resampling.BILINEAR.name.lower() == "bilinear"
+    assert Image.Resampling.BICUBIC.name.lower() == "bicubic"
+    assert Image.Resampling.LANCZOS.name.lower() == "lanczos"
 
 
 def test_getmodebands():

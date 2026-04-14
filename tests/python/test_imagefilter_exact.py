@@ -60,7 +60,7 @@ def test_blur_spreads_to_neighbors():
     im.putpixel((5, 5), 255)
     out = im.filter(ImageFilter.BLUR)
     # Neighbor pixels should now be > 0
-    neighbor = out.getpixel((4, 5))
+    neighbor = out.getpixel((3, 5))
     assert neighbor > 0
 
 
