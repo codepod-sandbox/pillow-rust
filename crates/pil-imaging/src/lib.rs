@@ -198,6 +198,33 @@ fn gif_save_animated<'py>(
     Ok(pyo3::types::PyBytes::new(py, &data))
 }
 
+/// Save one or more palette-indexed frames with an explicit colour table.
+/// `pixel_frames` is a list of raw palette-index bytes (one byte per pixel),
+/// `palette_bytes` is the flat RGB colour table (3 bytes per entry, ≤ 256 entries).
+#[pyfunction]
+#[pyo3(signature = (pixel_frames, width, height, palette_bytes, delays_ms, loop_count=0))]
+fn gif_save_with_palette<'py>(
+    pixel_frames: Vec<Vec<u8>>,
+    width: u16,
+    height: u16,
+    palette_bytes: Vec<u8>,
+    delays_ms: Vec<u32>,
+    loop_count: u16,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+    let refs: Vec<&[u8]> = pixel_frames.iter().map(|v| v.as_slice()).collect();
+    let data = pil_rust_core::gif_save_with_palette(
+        &refs,
+        width,
+        height,
+        &palette_bytes,
+        &delays_ms,
+        loop_count,
+    )
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(pyo3::types::PyBytes::new(py, &data))
+}
+
 #[pyfunction]
 fn gif_decode_frame(data: &[u8], frame_idx: usize) -> PyResult<imaging_core::ImagingCore> {
     let handle = pil_rust_core::gif_decode_frame(data, frame_idx)
@@ -363,6 +390,7 @@ fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(gif_save_animated, m)?)?;
     m.add_function(wrap_pyfunction!(gif_decode_frame, m)?)?;
     m.add_function(wrap_pyfunction!(gif_frame_count, m)?)?;
+    m.add_function(wrap_pyfunction!(gif_save_with_palette, m)?)?;
     m.add_function(wrap_pyfunction!(save_to_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(path, m)?)?;
     m.add_function(wrap_pyfunction!(new_block, m)?)?;

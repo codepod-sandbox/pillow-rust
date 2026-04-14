@@ -2646,10 +2646,82 @@ class Image:
         # Also trigger for single-frame GIFs with timing/loop metadata so those
         # attributes are preserved (image-rs GIF encoder writes the GCE block).
         _is_animated_save = params.get("save_all") or params.get("append_images")
+        _gif_custom_palette = _fast_fmt == "GIF" and "palette" in params
         _gif_with_meta = _fast_fmt in ("GIF",) and (
             any(k in params for k in ("duration", "loop", "comment"))
             or bool(self.info.get("comment"))
         )
+        # GIF save with explicit palette kwarg: use gif_save_with_palette for P/L mode
+        if _fast_fmt == "GIF" and _gif_custom_palette and _fast_target is not None:
+            try:
+                self.load()
+                _pal_raw = params["palette"]
+                if hasattr(_pal_raw, "tobytes"):
+                    _pal_bytes: bytes = _pal_raw.tobytes()
+                elif hasattr(_pal_raw, "getdata"):
+                    _, _pal_bytes = _pal_raw.getdata()
+                    _pal_bytes = bytes(_pal_bytes)
+                elif isinstance(_pal_raw, (list, tuple)):
+                    _pal_bytes = bytes(_pal_raw)
+                else:
+                    _pal_bytes = bytes(_pal_raw)
+                _append_imgs = list(params.get("append_images") or [])
+
+                def _expand_pal_frames(img: "Image") -> "tuple[list[bytes], list[int]]":
+                    """Return (pixel_bytes_list, durations) for all frames."""
+                    if not hasattr(img, "n_frames") or img.n_frames <= 1:
+                        img.load()
+                        _px = img.im.tobytes() if img.mode in ("P", "L") else img.convert("P").load() or img.convert("P").im.tobytes()
+                        return [_px], [int(img.info.get("duration", 0))]
+                    _cur = img.tell() if hasattr(img, "tell") else 0
+                    _frs: list[bytes] = []
+                    _durs: list[int] = []
+                    for _fi in range(img.n_frames):
+                        img.seek(_fi)
+                        img.load()
+                        _px = img.im.tobytes() if img.mode in ("P", "L") else img.convert("P").im.tobytes()
+                        _frs.append(_px)
+                        _durs.append(int(img.info.get("duration", 0)))
+                    img.seek(_cur)
+                    return _frs, _durs
+
+                if params.get("save_all"):
+                    _all_px, _frame_durs = _expand_pal_frames(self)
+                    for _ai in _append_imgs:
+                        _ai_px, _ai_durs = _expand_pal_frames(_ai)
+                        _all_px.extend(_ai_px)
+                        _frame_durs.extend(_ai_durs)
+                else:
+                    self.load()
+                    _all_px = [self.im.tobytes() if self.mode in ("P", "L") else self.convert("P").im.tobytes()]
+                    _frame_durs = [int(self.info.get("duration", 0))]
+                    for _ai in _append_imgs:
+                        _ai.load()
+                        _all_px.append(_ai.im.tobytes() if _ai.mode in ("P", "L") else _ai.convert("P").im.tobytes())
+                        _frame_durs.append(int(_ai.info.get("duration", 0)))
+
+                _duration_p = params.get("duration")
+                _loop_p = params.get("loop", self.info.get("loop", 0))
+                if _duration_p is not None:
+                    if isinstance(_duration_p, (list, tuple)):
+                        _delays_p = [int(d) for d in _duration_p]
+                    else:
+                        _delays_p = [int(_duration_p)] * len(_all_px)
+                else:
+                    _delays_p = [d if d > 0 else 100 for d in _frame_durs]
+
+                _w, _h = self.size
+                _data = core.gif_save_with_palette(
+                    _all_px, _w, _h, _pal_bytes, _delays_p, int(_loop_p)
+                )
+                if isinstance(_fast_target, (str, bytes)):
+                    with builtins.open(_fast_target, "wb") as _fw:
+                        _fw.write(_data)
+                else:
+                    _fast_target.write(_data)
+                return
+            except Exception:
+                pass  # fall through
         if _fast_fmt in ("GIF",) and (_is_animated_save or _gif_with_meta) and _fast_target is not None:
             try:
                 self.load()
@@ -2734,7 +2806,7 @@ class Image:
                 return
             except Exception:
                 pass  # fall through to format plugin
-        if _fast_fmt and _fast_target is not None and not _is_animated_save:
+        if _fast_fmt and _fast_target is not None and not _is_animated_save and not _gif_custom_palette:
             try:
                 self.load()
                 _data = core.save_to_bytes(self.im, _fast_fmt, **params)

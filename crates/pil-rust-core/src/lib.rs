@@ -240,6 +240,62 @@ fn gif_save_animated_luma(
     Ok(buf.into_inner())
 }
 
+/// Save palette-indexed frames with a caller-supplied colour table.
+pub fn gif_save_with_palette(
+    pixel_frames: &[&[u8]],
+    width: u16,
+    height: u16,
+    palette_bytes: &[u8],
+    delays_ms: &[u32],
+    loop_count: u16,
+) -> Result<Vec<u8>> {
+    use gif::{Encoder as GifRawEncoder, ExtensionData, Frame as GifFrame, Repeat};
+
+    // Pad or truncate the palette to a power-of-2 count of entries (≤ 256),
+    // then convert to &[u8] for the encoder.
+    let n_colors = (palette_bytes.len() / 3).next_power_of_two().clamp(2, 256);
+    let mut padded = vec![0u8; n_colors * 3];
+    let src_len = palette_bytes.len().min(n_colors * 3);
+    padded[..src_len].copy_from_slice(&palette_bytes[..src_len]);
+
+    let mut buf = Cursor::new(Vec::new());
+    {
+        let mut encoder = GifRawEncoder::new(&mut buf, width, height, &padded)
+            .map_err(|e| PilError::InvalidOperation(e.to_string()))?;
+        let repeat = if loop_count == 0 {
+            Repeat::Infinite
+        } else {
+            Repeat::Finite(loop_count)
+        };
+        encoder
+            .set_repeat(repeat)
+            .map_err(|e| PilError::InvalidOperation(e.to_string()))?;
+
+        for (i, &pixels) in pixel_frames.iter().enumerate() {
+            let delay_cs = delays_ms.get(i).copied().unwrap_or(100) / 10;
+            let frame = GifFrame {
+                width,
+                height,
+                buffer: std::borrow::Cow::Borrowed(pixels),
+                delay: delay_cs as u16,
+                ..GifFrame::default()
+            };
+            encoder
+                .write_extension(ExtensionData::new_control_ext(
+                    delay_cs as u16,
+                    gif::DisposalMethod::Any,
+                    false,
+                    None,
+                ))
+                .map_err(|e| PilError::InvalidOperation(e.to_string()))?;
+            encoder
+                .write_frame(&frame)
+                .map_err(|e| PilError::InvalidOperation(e.to_string()))?;
+        }
+    }
+    Ok(buf.into_inner())
+}
+
 pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<ImageHandle> {
     let img = match mode {
         "RGB" => {
