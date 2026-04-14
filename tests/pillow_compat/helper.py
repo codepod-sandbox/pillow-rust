@@ -16,8 +16,17 @@ from PIL import Image
 
 _hopper_cache: dict = {}
 
+# Path to the upstream Pillow hopper.ppm (in our test images directory)
+_HOPPER_PPM = os.path.join(
+    os.path.dirname(__file__), "..", "pillow_upstream", "images", "hopper.ppm"
+)
+
+
 def _make_hopper() -> Image.Image:
-    """Create a 128x128 deterministic test image matching upstream's hopper()."""
+    """Load hopper.ppm from upstream Pillow test images, or fall back to synthetic."""
+    if os.path.exists(_HOPPER_PPM):
+        return Image.open(_HOPPER_PPM).convert("RGB")
+    # Fallback synthetic image (statistics won't match upstream exactly)
     im = Image.new("RGB", (128, 128))
     for y in range(128):
         for x in range(128):
@@ -29,7 +38,7 @@ def _make_hopper() -> Image.Image:
 
 
 def hopper(mode: str | None = None) -> Image.Image:
-    """Return a copy of a deterministic test image in the given mode."""
+    """Return a copy of the upstream hopper test image in the given mode."""
     if mode not in _hopper_cache:
         base = _make_hopper()
         if mode is None or mode == "RGB":

@@ -433,6 +433,58 @@ class GifImageFile(ImageFile.ImageFile):
             elif k in self.info:
                 del self.info[k]
 
+    def load(self) -> Image.core.PixelAccess | None:
+        if self.tile and not hasattr(Image.core, "gif_decoder"):
+            return self._load_via_imagers()
+        return super().load()
+
+    def _load_via_imagers(self) -> Image.core.PixelAccess | None:
+        """Fallback GIF loader: decode via image-rs, reconstruct P-mode from palette."""
+        assert self.fp is not None
+        self.fp.seek(0)
+        data = self.fp.read()
+
+        # Decode to RGBA using image-rs
+        rgba_handle = Image.core.open_from_bytes(data)
+        rgba_bytes = rgba_handle.tobytes()  # RGBA bytes
+        w, h = self.size
+
+        # Build RGB → palette-index reverse map
+        pal = self.palette
+        if pal is not None:
+            pal_bytes = bytes(pal.palette)
+            n_colors = len(pal_bytes) // 3
+            rgb_to_idx: dict[tuple[int, int, int], int] = {}
+            for i in range(n_colors):
+                r, g, b = pal_bytes[i * 3], pal_bytes[i * 3 + 1], pal_bytes[i * 3 + 2]
+                if (r, g, b) not in rgb_to_idx:
+                    rgb_to_idx[(r, g, b)] = i
+
+            # Map each RGBA pixel to its palette index
+            indices = bytearray(w * h)
+            for i in range(w * h):
+                r, g, b = rgba_bytes[i * 4], rgba_bytes[i * 4 + 1], rgba_bytes[i * 4 + 2]
+                indices[i] = rgb_to_idx.get((r, g, b), 0)
+        else:
+            # L mode: use raw luma values
+            indices = bytearray(w * h)
+            for i in range(w * h):
+                indices[i] = rgba_bytes[i * 4]
+
+        # Build the ImagingCore for this image
+        mode = "P" if pal is not None else "L"
+        self.im = Image.core.new(mode, self.size)
+        self.im.frombytes(bytes(indices))
+        if pal is not None:
+            mode_str, pal_data = pal.getdata()
+            self.im.putpalette(mode_str, mode_str, pal_data)
+        self._mode = mode
+
+        # Clear tile and call load_end for any post-processing
+        self.tile = []
+        self.load_end()
+        return self.im.pixel_access(self.readonly)
+
     def load_prepare(self) -> None:
         temp_mode = "P" if self._frame_palette else "L"
         self._prev_im = None
