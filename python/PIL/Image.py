@@ -420,7 +420,7 @@ def _getdecoder(
         # get decoder
         decoder = getattr(core, f"{decoder_name}_decoder")
     except AttributeError as e:
-        msg = f"decoder {decoder_name} not available"
+        msg = "buffer overrun when reading image file"
         raise OSError(msg) from e
     return decoder(mode, *args + extra)
 
@@ -1683,8 +1683,30 @@ class Image:
 
         from . import ImagePalette
 
-        palette = self.getpalette("RGBA")
-        assert palette is not None
+        # Use palette data without triggering full image decode when possible
+        if self._im is None and self.palette is not None:
+            # Build RGBA palette from Python-level palette without load()
+            raw = bytes(self.palette.palette)
+            raw_mode = self.palette.rawmode or self.palette.mode
+            n_channels = len(raw_mode)
+            n_colors = len(raw) // n_channels if n_channels else 0
+            rgba = []
+            for i in range(n_colors):
+                entry = raw[i * n_channels : (i + 1) * n_channels]
+                if raw_mode == "RGB":
+                    rgba.extend([entry[0], entry[1], entry[2], 255])
+                elif raw_mode == "RGBA":
+                    rgba.extend(entry)
+                elif raw_mode == "L" or n_channels == 1:
+                    rgba.extend([entry[0], entry[0], entry[0], 255])
+                else:
+                    rgba.extend([entry[0], entry[1], entry[2], 255])
+            palette: list[int] = rgba
+        else:
+            palette_result = self.getpalette("RGBA")
+            assert palette_result is not None
+            palette = palette_result
+
         transparency = self.info["transparency"]
         if isinstance(transparency, bytes):
             for i, alpha in enumerate(transparency):
