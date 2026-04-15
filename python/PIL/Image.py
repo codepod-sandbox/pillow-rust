@@ -538,6 +538,9 @@ class Image:
         self.info: dict[str | tuple[int, int], Any] = {}
         self.readonly = 0
         self._exif: Exif | None = None
+        # ImageFile sets `tile = [(decoder, extents, offset, args), ...]`
+        # during _open(); non-file images leave it empty.
+        self.tile: list[Any] = []
 
     @property
     def im(self) -> core.ImagingCore:

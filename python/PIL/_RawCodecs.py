@@ -289,5 +289,21 @@ class RawEncoder:
             self.fd.write(data)
         return n, err
 
+    def encode_to_file(self, fd: int, bufsize: int) -> int:
+        """Write encoded bytes directly to the given file descriptor.
+
+        Pillow's C encoders implement this to stream to an OS-level fd;
+        we delegate to `encode()` and write the resulting bytes via
+        `os.write` so callers that use the fd path get the same result.
+        """
+        import os as _os
+
+        n, err, data = self.encode(bufsize)
+        if err < 0:
+            return err
+        if data:
+            _os.write(fd, data)
+        return n
+
     def cleanup(self) -> None:
         pass
