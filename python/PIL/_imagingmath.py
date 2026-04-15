@@ -103,18 +103,20 @@ def _apply_binop(opname: str, mode: str, out_im, im1, im2) -> None:
             result = [x | y for x, y in zip(a, b)]
         elif opname == "xor":
             result = [x ^ y for x, y in zip(a, b)]
+        # Pillow's I/F-mode comparison ops yield 1 for true / 0 for false
+        # (not 255 like L-mode), since the result is still in I/F space.
         elif opname == "lt":
-            result = [255 if _signed16(x) < _signed16(y) else 0 for x, y in zip(a, b)]
+            result = [1 if _signed16(x) < _signed16(y) else 0 for x, y in zip(a, b)]
         elif opname == "le":
-            result = [255 if _signed16(x) <= _signed16(y) else 0 for x, y in zip(a, b)]
+            result = [1 if _signed16(x) <= _signed16(y) else 0 for x, y in zip(a, b)]
         elif opname == "eq":
-            result = [255 if x == y else 0 for x, y in zip(a, b)]
+            result = [1 if x == y else 0 for x, y in zip(a, b)]
         elif opname == "ne":
-            result = [255 if x != y else 0 for x, y in zip(a, b)]
+            result = [1 if x != y else 0 for x, y in zip(a, b)]
         elif opname == "ge":
-            result = [255 if _signed16(x) >= _signed16(y) else 0 for x, y in zip(a, b)]
+            result = [1 if _signed16(x) >= _signed16(y) else 0 for x, y in zip(a, b)]
         elif opname == "gt":
-            result = [255 if _signed16(x) > _signed16(y) else 0 for x, y in zip(a, b)]
+            result = [1 if _signed16(x) > _signed16(y) else 0 for x, y in zip(a, b)]
         else:
             raise NotImplementedError(f"binop {opname}_{mode} not implemented")
         _put_I(out_im, result)

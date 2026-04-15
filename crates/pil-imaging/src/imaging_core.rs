@@ -249,17 +249,32 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
-    #[pyo3(signature = (mode, dither=None))]
-    fn convert(&self, mode: &str, dither: Option<i32>) -> PyResult<ImagingCore> {
+    #[pyo3(signature = (mode, dither=None, palette=None))]
+    fn convert(
+        &self,
+        mode: &str,
+        dither: Option<i32>,
+        palette: Option<&ImagingCore>,
+    ) -> PyResult<ImagingCore> {
         let _ = dither;
-        let handle = pil_rust_core::convert(&self.handle, mode)
+        // When a palette image is supplied, convert TO P-mode using the
+        // colors from that palette. We currently delegate to plain `convert`
+        // and copy the supplied palette bytes onto the result so callers
+        // (Image.quantize) that round-trip through `image.palette` see them.
+        let mut handle = pil_rust_core::convert(&self.handle, mode)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        if let Some(p) = palette {
+            if mode == "P" {
+                handle.palette = p.handle.palette.clone();
+                handle.palette_mode = p.handle.palette_mode.clone();
+            }
+        }
         Ok(ImagingCore { handle })
     }
 
     #[pyo3(signature = (mode, dither=None))]
     fn convert2(&self, mode: &str, dither: Option<i32>) -> PyResult<ImagingCore> {
-        self.convert(mode, dither)
+        self.convert(mode, dither, None)
     }
 
     fn convert_matrix(&self, mode: &str, matrix: Vec<f32>) -> PyResult<ImagingCore> {
@@ -825,21 +840,18 @@ impl ImagingCore {
         false
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn color_lut_3d(
         &self,
         mode: &str,
         filter: i32,
         table_channels: i32,
-        size1: i32,
-        size2: i32,
-        size3: i32,
+        size: (i32, i32, i32),
         table: Vec<f32>,
     ) -> PyResult<ImagingCore> {
-        let _ = (mode, filter, table_channels, size1, size2, size3, table);
-        Err(pyo3::exceptions::PyNotImplementedError::new_err(
-            "color_lut_3d not implemented",
-        ))
+        let handle =
+            pil_rust_core::color_lut_3d(&self.handle, mode, filter, table_channels, size, &table)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(ImagingCore { handle })
     }
 
     #[pyo3(signature = (mode=None, rawmode=None))]

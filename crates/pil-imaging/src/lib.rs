@@ -311,21 +311,60 @@ fn path(coords: Option<&Bound<'_, PyAny>>) -> PyResult<imaging_path::ImagingPath
     let Some(coords) = coords else {
         return Ok(imaging_path::ImagingPath { coords: vec![] });
     };
-    let pts: Vec<(f64, f64)> = if let Ok(flat) = coords.extract::<Vec<f64>>() {
+
+    // Accept an existing ImagingPath: copy its coords directly.
+    if let Ok(existing) = coords.extract::<PyRef<'_, imaging_path::ImagingPath>>() {
+        return Ok(imaging_path::ImagingPath {
+            coords: existing.coords.clone(),
+        });
+    }
+
+    // A plain int N produces an empty path with N points (all zero) — Pillow
+    // uses this for pre-allocating coordinate buffers.
+    if let Ok(n) = coords.extract::<usize>() {
+        return Ok(imaging_path::ImagingPath {
+            coords: vec![(0.0, 0.0); n],
+        });
+    }
+
+    // Tuple of pairs: ((x0,y0),(x1,y1),...) or list of pairs.
+    if let Ok(pairs) = coords.extract::<Vec<(f64, f64)>>() {
+        return Ok(imaging_path::ImagingPath { coords: pairs });
+    }
+
+    // Flat sequence of floats: [x0, y0, x1, y1, ...].
+    if let Ok(flat) = coords.extract::<Vec<f64>>() {
         if flat.len() % 2 != 0 {
             return Err(pyo3::exceptions::PyValueError::new_err(
-                "incorrect number of coordinates",
+                "wrong number of coordinates",
             ));
         }
-        flat.chunks(2).map(|c| (c[0], c[1])).collect()
-    } else if let Ok(pairs) = coords.extract::<Vec<(f64, f64)>>() {
-        pairs
-    } else {
-        return Err(pyo3::exceptions::PyTypeError::new_err(
-            "path coords must be flat list or list of pairs",
-        ));
-    };
-    Ok(imaging_path::ImagingPath { coords: pts })
+        return Ok(imaging_path::ImagingPath {
+            coords: flat.chunks(2).map(|c| (c[0], c[1])).collect(),
+        });
+    }
+
+    // Buffer protocol (e.g. array.array, bytes from array.tobytes()): treat
+    // as a sequence of f32 floats and convert.
+    if let Ok(bytes) = coords.extract::<Vec<u8>>() {
+        // 4 bytes per f32; must be multiple of 8 (pair of f32)
+        if bytes.len() % 4 != 0 || (bytes.len() / 4) % 2 != 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "wrong number of coordinates",
+            ));
+        }
+        let mut pts = Vec::with_capacity(bytes.len() / 8);
+        for chunk in bytes.chunks_exact(8) {
+            let x = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64;
+            let y = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]) as f64;
+            pts.push((x, y));
+        }
+        return Ok(imaging_path::ImagingPath { coords: pts });
+    }
+
+    Err(pyo3::exceptions::PyValueError::new_err(
+        "incorrect coordinate type",
+    ))
 }
 
 #[pyfunction]

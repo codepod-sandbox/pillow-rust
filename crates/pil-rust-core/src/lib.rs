@@ -4418,6 +4418,105 @@ pub fn getcolors(handle: &ImageHandle, maxcolors: usize) -> Option<Vec<(u32, [u8
 // reduce / offset_image / expand_image
 // ---------------------------------------------------------------------------
 
+/// Apply a 3D color LUT (look-up table) to an image. Mirrors Pillow's
+/// `ImagingColorLUT3D` C function: trilinear interpolation through a
+/// `table_channels` * sx * sy * sz lookup table indexed by the source RGB
+/// values normalised to 0..(size-1).
+pub fn color_lut_3d(
+    handle: &ImageHandle,
+    mode: &str,
+    filter: i32,
+    table_channels: i32,
+    size: (i32, i32, i32),
+    table: &[f32],
+) -> Result<ImageHandle> {
+    let (sx, sy, sz) = size;
+    if !matches!(table_channels, 3 | 4) {
+        return Err(PilError::InvalidOperation(
+            "wrong table channels number, should be 3 or 4".into(),
+        ));
+    }
+    if filter != 2 {
+        return Err(PilError::InvalidOperation(
+            "Only LINEAR filter is supported".into(),
+        ));
+    }
+    for s in [sx, sy, sz] {
+        if !(2..=65).contains(&s) {
+            return Err(PilError::InvalidOperation(
+                "Table size in any dimension should be in [2, 65] range".into(),
+            ));
+        }
+    }
+    let expected = (table_channels as usize) * (sx as usize) * (sy as usize) * (sz as usize);
+    if table.len() != expected {
+        return Err(PilError::InvalidOperation(format!(
+            "wrong table size: expected {expected} elements, got {}",
+            table.len()
+        )));
+    }
+    if !matches!(mode, "RGB" | "RGBA") {
+        return Err(PilError::InvalidOperation(
+            "Only RGB and RGBA modes are supported".into(),
+        ));
+    }
+
+    let img = handle.inner.to_rgba8();
+    let (w, h) = (img.width(), img.height());
+    let stride_y = (sx as usize) * (table_channels as usize);
+    let stride_z = (sy as usize) * stride_y;
+    let lookup = |xi: usize, yi: usize, zi: usize, c: usize| -> f32 {
+        table[zi * stride_z + yi * stride_y + xi * (table_channels as usize) + c]
+    };
+    let mut out = image::RgbaImage::new(w, h);
+    let max_x = (sx - 1) as f32;
+    let max_y = (sy - 1) as f32;
+    let max_z = (sz - 1) as f32;
+    for (px, py, pixel) in img.enumerate_pixels() {
+        let r = pixel[0] as f32 / 255.0;
+        let g = pixel[1] as f32 / 255.0;
+        let b = pixel[2] as f32 / 255.0;
+        let fx = (r * max_x).clamp(0.0, max_x);
+        let fy = (g * max_y).clamp(0.0, max_y);
+        let fz = (b * max_z).clamp(0.0, max_z);
+        let x0 = fx.floor() as usize;
+        let y0 = fy.floor() as usize;
+        let z0 = fz.floor() as usize;
+        let x1 = (x0 + 1).min((sx - 1) as usize);
+        let y1 = (y0 + 1).min((sy - 1) as usize);
+        let z1 = (z0 + 1).min((sz - 1) as usize);
+        let dx = fx - x0 as f32;
+        let dy = fy - y0 as f32;
+        let dz = fz - z0 as f32;
+        let mut out_px = [0u8; 4];
+        for (c, out_ch) in out_px.iter_mut().take(table_channels as usize).enumerate() {
+            let c00 = lookup(x0, y0, z0, c) * (1.0 - dx) + lookup(x1, y0, z0, c) * dx;
+            let c01 = lookup(x0, y0, z1, c) * (1.0 - dx) + lookup(x1, y0, z1, c) * dx;
+            let c10 = lookup(x0, y1, z0, c) * (1.0 - dx) + lookup(x1, y1, z0, c) * dx;
+            let c11 = lookup(x0, y1, z1, c) * (1.0 - dx) + lookup(x1, y1, z1, c) * dx;
+            let c0 = c00 * (1.0 - dy) + c10 * dy;
+            let c1 = c01 * (1.0 - dy) + c11 * dy;
+            let v = c0 * (1.0 - dz) + c1 * dz;
+            *out_ch = (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+        if table_channels == 3 {
+            out_px[3] = pixel[3];
+        }
+        out.put_pixel(px, py, image::Rgba(out_px));
+    }
+    let inner = if mode == "RGB" {
+        DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(out).to_rgb8())
+    } else {
+        DynamicImage::ImageRgba8(out)
+    };
+    Ok(ImageHandle {
+        inner,
+        mode_override: handle.mode_override,
+        palette: None,
+        palette_mode: None,
+    })
+}
+
 /// Reduce image by integer factor using lanczos downscale.
 pub fn reduce(handle: &ImageHandle, factor_x: u32, factor_y: u32) -> ImageHandle {
     let (w, h) = (handle.inner.width(), handle.inner.height());

@@ -227,6 +227,11 @@ class RawEncoder:
     Arguments: (rawmode, stride=0, orientation=1)
     """
 
+    # Pillow's C encoders publish whether they consume the file descriptor
+    # directly. Our pure-Python RawEncoder always writes through `encode()`,
+    # so it does not push to the fd itself.
+    pushes_fd: bool = False
+
     def __init__(self, mode: str, *args: Any) -> None:
         self.mode = mode
         self.rawmode: str = args[0] if args and args[0] else mode
