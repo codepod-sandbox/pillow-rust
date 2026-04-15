@@ -424,8 +424,15 @@ fn clear_cache(_n: Option<i32>) -> i32 {
 }
 
 #[pyfunction]
-fn set_alignment(n: i32) {
+fn set_alignment(n: i32) -> PyResult<()> {
+    // Pillow's C impl only accepts power-of-two values in 1..=128.
+    if !(1..=128).contains(&n) || (n & (n - 1)) != 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "alignment must be 1, 2, 4, 8, 16, 32, 64 or 128",
+        ));
+    }
     ALIGNMENT.store(n, Ordering::Relaxed);
+    Ok(())
 }
 
 #[pyfunction]
@@ -434,8 +441,15 @@ fn get_alignment() -> i32 {
 }
 
 #[pyfunction]
-fn set_block_size(n: i32) {
+fn set_block_size(n: i32) -> PyResult<()> {
+    // Pillow's C impl requires block_size >= 4KiB and a multiple of 4KiB.
+    if n < 4096 || n % 4096 != 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "block_size must be a multiple of 4096 and >= 4096",
+        ));
+    }
     BLOCK_SIZE.store(n, Ordering::Relaxed);
+    Ok(())
 }
 
 #[pyfunction]
@@ -444,8 +458,14 @@ fn get_block_size() -> i32 {
 }
 
 #[pyfunction]
-fn set_blocks_max(n: i32) {
+fn set_blocks_max(n: i32) -> PyResult<()> {
+    if n < 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "blocks_max must be >= 0",
+        ));
+    }
     BLOCKS_MAX.store(n, Ordering::Relaxed);
+    Ok(())
 }
 
 #[pyfunction]
@@ -458,8 +478,17 @@ fn get_blocks_max() -> i32 {
 fn set_use_block_allocator(_enable: Option<bool>) {}
 
 #[pyfunction]
-fn get_stats() -> (i32, i32) {
-    (0, 0)
+fn get_stats(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+    // Pillow exposes a dict with named memory-pool counters. We don't
+    // actually track any, so everything is zero — but the keys must exist.
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("new_count", 0i64)?;
+    d.set_item("allocated_blocks", 0i64)?;
+    d.set_item("reused_blocks", 0i64)?;
+    d.set_item("reallocated_blocks", 0i64)?;
+    d.set_item("freed_blocks", 0i64)?;
+    d.set_item("blocks_cached", 0i64)?;
+    Ok(d.unbind())
 }
 
 #[pyfunction]
