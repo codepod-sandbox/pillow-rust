@@ -447,6 +447,10 @@ class GifImageFile(ImageFile.ImageFile):
         # Determine which frame to decode (name-mangled __frame attribute)
         frame_idx = getattr(self, "_GifImageFile__frame", 0)
 
+        # The mode after _seek() tells us what output format is expected.
+        # For non-first frames, _seek may have already converted to RGB/RGBA.
+        target_mode = self._mode  # may be "P", "L", "RGB", or "RGBA"
+
         # Decode the specific frame to RGBA using image-rs animation decoder
         try:
             rgba_handle = Image.core.gif_decode_frame(data, frame_idx)
@@ -459,42 +463,132 @@ class GifImageFile(ImageFile.ImageFile):
                 rgba_handle = Image.core.open_from_bytes(data)
         rgba_bytes = rgba_handle.tobytes()  # RGBA bytes
         w, h = self.size
-
-        # Build RGB → palette-index reverse map (for P-mode GIFs)
-        pal = self.palette
-        if pal is not None:
-            pal_bytes = bytes(pal.palette)
-            n_colors = len(pal_bytes) // 3
-            rgb_to_idx: dict[tuple[int, int, int], int] = {}
-            for i in range(n_colors):
-                r, g, b = pal_bytes[i * 3], pal_bytes[i * 3 + 1], pal_bytes[i * 3 + 2]
-                if (r, g, b) not in rgb_to_idx:
-                    rgb_to_idx[(r, g, b)] = i
-
-            # Map each RGBA pixel to its palette index
-            indices = bytearray(w * h)
-            for i in range(w * h):
-                r, g, b = rgba_bytes[i * 4], rgba_bytes[i * 4 + 1], rgba_bytes[i * 4 + 2]
-                indices[i] = rgb_to_idx.get((r, g, b), 0)
+        # gif_decode_frame returns the composited image at the GIF's logical
+        # screen size (from the header).  If the canvas has been expanded by
+        # an "extents" frame (frame position + size > logical screen), the
+        # decoded RGBA buffer is smaller than w*h.  Handle by clamping the
+        # copy to the decoded area and leaving the rest blank.
+        decoded_pixels = len(rgba_bytes) // 4  # number of RGBA pixels returned
+        if decoded_pixels < w * h:
+            # Determine decoded dimensions: image-rs always gives the full
+            # logical screen, so decoded dims = sqrt of decoded_pixels is only
+            # valid for square canvases.  Use the known canvas from the GIF
+            # header (logical screen) to figure out decoded width/height.
+            # We can derive it: logical screen width/height was stored in the
+            # handle; use the pixel count and the original aspect ratio.
+            # Simplest safe approach: use decoded_w = rgba_handle size fields.
+            try:
+                decoded_w, decoded_h = rgba_handle.size[0], rgba_handle.size[1]
+            except Exception:
+                # Fallback: assume original canvas is square-ish
+                import math
+                decoded_w = int(math.isqrt(decoded_pixels))
+                decoded_h = decoded_pixels // max(decoded_w, 1)
         else:
-            # L mode: use luma channel
-            indices = bytearray(w * h)
-            for i in range(w * h):
-                indices[i] = rgba_bytes[i * 4]
+            decoded_w, decoded_h = w, h
 
-        # Build the ImagingCore for this frame
-        mode = "P" if pal is not None else "L"
-        self.im = Image.core.new(mode, self.size)
-        self.im.frombytes(bytes(indices))
-        if pal is not None:
-            if pal.rawmode:
-                # Raw palette bytes (e.g. from PNG PLTE chunk) — use directly
-                pal_data = bytes(pal.palette)
-                pal_mode = pal.rawmode
+        # Number of pixels actually present in rgba_bytes (may be < w*h for
+        # "extents" frames where the decoded canvas is smaller than the expanded one)
+        n_decoded = decoded_w * decoded_h
+
+        if target_mode in ("RGB", "RGBA"):
+            # Non-first frames converted to RGB/RGBA by _seek: use RGBA bytes directly.
+            if target_mode == "RGBA":
+                self.im = Image.core.new("RGBA", self.size)
+                if n_decoded == w * h:
+                    self.im.frombytes(rgba_bytes)
+                else:
+                    # Extents: decoded canvas is smaller; place it at (0,0)
+                    decoded_im = Image.core.new("RGBA", (decoded_w, decoded_h))
+                    decoded_im.frombytes(rgba_bytes)
+                    self.im.paste(decoded_im, (0, 0, decoded_w, decoded_h))
             else:
-                pal_mode, pal_data = pal.getdata()
-            self.im.putpalette(pal_mode, pal_mode, pal_data)
-        self._mode = mode
+                # RGB: drop alpha channel
+                rgb_bytes = bytearray(n_decoded * 3)
+                for i in range(n_decoded):
+                    rgb_bytes[i * 3] = rgba_bytes[i * 4]
+                    rgb_bytes[i * 3 + 1] = rgba_bytes[i * 4 + 1]
+                    rgb_bytes[i * 3 + 2] = rgba_bytes[i * 4 + 2]
+                if n_decoded == w * h:
+                    self.im = Image.core.new("RGB", self.size)
+                    self.im.frombytes(bytes(rgb_bytes))
+                else:
+                    decoded_im = Image.core.new("RGB", (decoded_w, decoded_h))
+                    decoded_im.frombytes(bytes(rgb_bytes))
+                    self.im = Image.core.new("RGB", self.size)
+                    self.im.paste(decoded_im, (0, 0, decoded_w, decoded_h))
+            self._mode = target_mode
+            # Do NOT clear self.palette here - callers such as tests may still
+            # query im.palette after loading an RGB/RGBA frame (e.g. to confirm
+            # the global palette is still accessible).  The tile list is already
+            # emptied below, so load() won't re-enter _load_via_imagers and
+            # there is no risk of the palette being mis-applied.
+        else:
+            # P-mode or L-mode: build palette-indexed image.
+            # Use the frame-specific palette (local color table if present, else global)
+            # _frame_palette can be False (LCT present but not needed), None, or a palette
+            _fp = self._frame_palette if hasattr(self, "_frame_palette") else None
+            pal = _fp if (_fp and _fp is not None) else self.palette
+            if pal is not None:
+                pal_bytes = bytes(pal.palette)
+                n_colors = len(pal_bytes) // 3
+                rgb_to_idx: dict[tuple[int, int, int], int] = {}
+                for i in range(n_colors):
+                    r, g, b = pal_bytes[i * 3], pal_bytes[i * 3 + 1], pal_bytes[i * 3 + 2]
+                    if (r, g, b) not in rgb_to_idx:
+                        rgb_to_idx[(r, g, b)] = i
+
+                # For transparent pixels (alpha=0), use the declared transparency
+                # index directly.  image-rs gif_decode_frame zeroes out the RGB
+                # channels of transparent pixels, so a naive RGB→palette lookup
+                # would map them to whatever palette entry is closest to black,
+                # which may not be the transparency index.
+                _transparency_idx = self.info.get("transparency")
+                if not isinstance(_transparency_idx, int):
+                    _transparency_idx = None
+
+                # Map each RGBA pixel to its palette index (only decoded pixels)
+                indices = bytearray(w * h)  # default 0 for out-of-canvas pixels
+                for i in range(n_decoded):
+                    a = rgba_bytes[i * 4 + 3]
+                    if a == 0 and _transparency_idx is not None:
+                        indices[i] = _transparency_idx
+                    else:
+                        r, g, b = rgba_bytes[i * 4], rgba_bytes[i * 4 + 1], rgba_bytes[i * 4 + 2]
+                        indices[i] = rgb_to_idx.get((r, g, b), 0)
+            else:
+                # L mode: use luma channel, but map transparent pixels to the
+                # declared transparency index (same logic as P-mode above).
+                _l_trans = self.info.get("transparency")
+                if not isinstance(_l_trans, int):
+                    _l_trans = None
+                indices = bytearray(w * h)
+                for i in range(n_decoded):
+                    a = rgba_bytes[i * 4 + 3]
+                    if a == 0 and _l_trans is not None:
+                        indices[i] = _l_trans
+                    else:
+                        indices[i] = rgba_bytes[i * 4]
+
+            # Build the ImagingCore for this frame
+            mode = "P" if pal is not None else "L"
+            self.im = Image.core.new(mode, self.size)
+            self.im.frombytes(bytes(indices))
+            if pal is not None:
+                if pal.rawmode:
+                    # Raw palette bytes (e.g. from PNG PLTE chunk) — use directly
+                    pal_data = bytes(pal.palette)
+                    pal_mode = pal.rawmode
+                else:
+                    pal_mode, pal_data = pal.getdata()
+                self.im.putpalette(pal_mode, pal_mode, pal_data)
+                # Update self.palette so callers see the frame-specific palette.
+                # Mark as clean (dirty=0) so that Image.convert() doesn't
+                # re-sync the Python palette bytes over the ImagingCore palette
+                # (which would undo any putpalettealpha calls).
+                self.palette = pal
+                self.palette.dirty = 0
+            self._mode = mode
 
         # Set _prev_im so load_end() doesn't crash for non-zero frames
         if not hasattr(self, "_prev_im"):

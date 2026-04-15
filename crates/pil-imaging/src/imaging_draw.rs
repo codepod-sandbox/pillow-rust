@@ -31,25 +31,55 @@ fn extract_rgba(color: &Bound<'_, PyAny>) -> PyResult<[u8; 4]> {
     ))
 }
 
-/// Accept a bounding box as either:
-/// - flat sequence of 4 ints: [x0, y0, x1, y1] or (x0, y0, x1, y1)
-/// - list/tuple of 2 (x,y) pairs: [(x0,y0),(x1,y1)]
+/// Accept a bounding box as either a flat sequence of 4 numbers
+/// `[x0, y0, x1, y1]` / `(x0, y0, x1, y1)` or a list/tuple of 2 (x,y)
+/// pairs `[(x0,y0),(x1,y1)]`. Accepts ints or floats (floats are
+/// truncated to int32 via `as i32`).
 fn extract_box(xy: &Bound<'_, PyAny>) -> PyResult<(i32, i32, i32, i32)> {
+    // Try exact int 4-tuple first (fastest, most common).
     if let Ok((x0, y0, x1, y1)) = xy.extract::<(i32, i32, i32, i32)>() {
         return Ok((x0, y0, x1, y1));
     }
+    // Float 4-tuple.
+    if let Ok((x0, y0, x1, y1)) = xy.extract::<(f64, f64, f64, f64)>() {
+        return Ok((x0 as i32, y0 as i32, x1 as i32, y1 as i32));
+    }
+    // List/tuple of 2 int (x,y) pairs.
     if let Ok(pairs) = xy.extract::<Vec<(i32, i32)>>() {
         if pairs.len() >= 2 {
             return Ok((pairs[0].0, pairs[0].1, pairs[1].0, pairs[1].1));
         }
     }
+    // List/tuple of 2 float (x,y) pairs.
+    if let Ok(pairs) = xy.extract::<Vec<(f64, f64)>>() {
+        if pairs.len() >= 2 {
+            return Ok((
+                pairs[0].0 as i32,
+                pairs[0].1 as i32,
+                pairs[1].0 as i32,
+                pairs[1].1 as i32,
+            ));
+        }
+    }
+    // Flat sequence of ints.
     if let Ok(flat) = xy.extract::<Vec<i32>>() {
         if flat.len() >= 4 {
             return Ok((flat[0], flat[1], flat[2], flat[3]));
         }
     }
+    // Flat sequence of floats.
+    if let Ok(flat) = xy.extract::<Vec<f64>>() {
+        if flat.len() >= 4 {
+            return Ok((
+                flat[0] as i32,
+                flat[1] as i32,
+                flat[2] as i32,
+                flat[3] as i32,
+            ));
+        }
+    }
     Err(pyo3::exceptions::PyTypeError::new_err(
-        "xy must be a sequence of 4 ints or 2 (x,y) pairs",
+        "xy must be a sequence of 4 numbers or 2 (x,y) pairs",
     ))
 }
 

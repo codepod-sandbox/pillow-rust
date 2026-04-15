@@ -47,12 +47,7 @@ impl ImagingCore {
 
     #[getter]
     fn bands(&self) -> u32 {
-        match pil_rust_core::mode(&self.handle) {
-            "L" | "P" => 1,
-            "LA" | "PA" => 2,
-            "RGB" | "YCbCr" | "LAB" | "HSV" => 3,
-            _ => 4,
-        }
+        pil_rust_core::bands(&self.handle) as u32
     }
 
     #[getter]
@@ -79,11 +74,7 @@ impl ImagingCore {
         let px = pil_rust_core::getpixel(&self.handle, x, y);
         let mode = pil_rust_core::mode(&self.handle);
         let result: Py<PyAny> = match mode {
-            "1" => (if px[0] >= 128 { 1i32 } else { 0i32 })
-                .into_pyobject(py)?
-                .into_any()
-                .unbind(),
-            "L" | "P" => (px[0] as i32).into_pyobject(py)?.into_any().unbind(),
+            "1" | "L" | "P" => (px[0] as i32).into_pyobject(py)?.into_any().unbind(),
             "LA" | "La" | "PA" => (px[0] as i32, px[3] as i32)
                 .into_pyobject(py)?
                 .into_any()
@@ -132,10 +123,29 @@ impl ImagingCore {
     ) -> PyResult<ImagingCore> {
         let _ = box_;
         let _ = reducing_gap;
-        let filter_name = match filter.unwrap_or(0) {
+        let f = filter.unwrap_or(0);
+        // Pillow's valid resample codes: 0 NEAREST, 1 LANCZOS, 2 BILINEAR,
+        // 3 BICUBIC, 4 BOX, 5 HAMMING.
+        if !(0..=5).contains(&f) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown resampling filter ({f})"
+            )));
+        }
+        // "1" and "P" modes only support nearest-neighbour resampling (the
+        // other filters perform convolution arithmetic on pixel indices,
+        // which is meaningless for palette / bit-packed modes).
+        let mode = pil_rust_core::mode(&self.handle);
+        if f != 0 && matches!(mode, "1" | "P") {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "image has wrong mode",
+            ));
+        }
+        let filter_name = match f {
             1 => "lanczos",
             2 => "bilinear",
             3 => "bicubic",
+            // BOX (4) and HAMMING (5) aren't available in image-rs; leave as
+            // nearest-neighbour to preserve existing callers' expectations.
             _ => "nearest",
         };
         let handle = pil_rust_core::resize(&self.handle, size.0, size.1, filter_name);
@@ -258,15 +268,27 @@ impl ImagingCore {
         Ok(ImagingCore { handle })
     }
 
-    fn convert_transparent(&self, mode: &str, color: (u8, u8, u8)) -> PyResult<ImagingCore> {
+    fn convert_transparent(&self, mode: &str, color: &Bound<'_, PyAny>) -> PyResult<ImagingCore> {
         let _ = mode;
+        // Accept either an int (for L/P-source transparency — value is the
+        // single-band index to treat as transparent) or an RGB tuple (for
+        // RGB-source transparency).
+        let (tr, tg, tb) = if let Ok(t) = color.extract::<(u8, u8, u8)>() {
+            t
+        } else if let Ok(t) = color.extract::<u8>() {
+            (t, t, t)
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "transparency color must be int or 3-tuple",
+            ));
+        };
         let mut rgba = pil_rust_core::convert(&self.handle, "RGBA")
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let (w, h) = pil_rust_core::size(&rgba);
         for y in 0..h {
             for x in 0..w {
                 let px = pil_rust_core::getpixel(&rgba, x, y);
-                if px[0] == color.0 && px[1] == color.1 && px[2] == color.2 {
+                if px[0] == tr && px[1] == tg && px[2] == tb {
                     pil_rust_core::putpixel(&mut rgba, x, y, [px[0], px[1], px[2], 0]);
                 }
             }
@@ -551,11 +573,7 @@ impl ImagingCore {
         let px = pil_rust_core::getpixel(&self.handle, x as u32, y as u32);
         let mode = pil_rust_core::mode(&self.handle);
         let result: Py<PyAny> = match mode {
-            "1" => (if px[0] >= 128 { 1i32 } else { 0i32 })
-                .into_pyobject(py)?
-                .into_any()
-                .unbind(),
-            "L" | "P" => (px[0] as i32).into_pyobject(py)?.into_any().unbind(),
+            "1" | "L" | "P" => (px[0] as i32).into_pyobject(py)?.into_any().unbind(),
             // image crate's get_pixel converts LumaA→Rgba where A is at index 3
             "LA" | "PA" | "La" => (px[0] as i32, px[3] as i32)
                 .into_pyobject(py)?
@@ -597,6 +615,47 @@ impl ImagingCore {
             ));
         }
         let mode = pil_rust_core::mode(&self.handle).to_owned();
+        let is_single_band = matches!(
+            mode.as_str(),
+            "L" | "1" | "P" | "I" | "F" | "I;16" | "I;16L" | "I;16B" | "I;16N"
+        );
+        // Pillow's putpixel only accepts int or tuple-of-ints. Floats, strings,
+        // None, etc. raise TypeError with a mode-specific message — generic
+        // "int or tuple" for multi-band, "int or single-element tuple" for
+        // single-band modes.
+        let is_int = color.cast::<pyo3::types::PyInt>().is_ok();
+        let is_tuple = color.cast::<pyo3::types::PyTuple>().is_ok()
+            || color.cast::<pyo3::types::PyList>().is_ok();
+        if !is_int && !is_tuple {
+            let msg = if is_single_band {
+                "color must be int or single-element tuple"
+            } else {
+                "color must be int or tuple"
+            };
+            return Err(pyo3::exceptions::PyTypeError::new_err(msg));
+        }
+        // Validate tuple element count against mode's band count.
+        if let Ok(tup) = color.extract::<Vec<i64>>() {
+            let n = tup.len();
+            let valid = match mode.as_str() {
+                "L" | "1" | "P" | "I" | "F" | "I;16" | "I;16L" | "I;16B" | "I;16N" => n == 1,
+                "LA" | "PA" | "La" => n == 1 || n == 2,
+                "RGB" | "RGBA" | "CMYK" | "YCbCr" | "LAB" | "HSV" | "RGBX" | "RGBa" => {
+                    n == 1 || n == 3 || n == 4
+                }
+                _ => true,
+            };
+            if !valid {
+                let msg = match mode.as_str() {
+                    "L" | "1" | "P" | "I" | "F" | "I;16" | "I;16L" | "I;16B" | "I;16N" => {
+                        "color must be int or single-element tuple"
+                    }
+                    "LA" | "PA" | "La" => "color must be int, or tuple of one or two elements",
+                    _ => "color must be int, or tuple of one, three or four elements",
+                };
+                return Err(pyo3::exceptions::PyTypeError::new_err(msg));
+            }
+        }
         let bytes = crate::extract_color_bytes(color, &mode)?;
         let rgba = [
             bytes.first().copied().unwrap_or(0),
@@ -665,10 +724,17 @@ impl ImagingCore {
             };
             pil_rust_core::putdata_16bit(&mut self.handle, &bytes);
         } else if let Ok(bytes) = data.extract::<Vec<u8>>() {
-            if scale == 1.0 && offset == 0.0 {
-                pil_rust_core::putdata(&mut self.handle, &bytes);
+            let scaled: Vec<u8> = if scale == 1.0 && offset == 0.0 {
+                bytes
             } else {
-                let scaled: Vec<u8> = bytes.into_iter().map(|v| apply_scale(v as f64)).collect();
+                bytes.into_iter().map(|v| apply_scale(v as f64)).collect()
+            };
+            // Multi-band modes treat a flat scalar sequence as first-channel values
+            // (leaving other channels unchanged), matching Pillow's putdata semantics.
+            let bands = pil_rust_core::bands(&self.handle);
+            if bands > 1 {
+                pil_rust_core::putdata_scalar(&mut self.handle, &scaled);
+            } else {
                 pil_rust_core::putdata(&mut self.handle, &scaled);
             }
         } else if let Ok(seq) = data.extract::<Vec<(u8, u8)>>() {

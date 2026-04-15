@@ -67,6 +67,14 @@ fn fill(
 }
 
 pub fn extract_color_bytes(color: &Bound<'_, PyAny>, mode: &str) -> PyResult<Vec<u8>> {
+    // An int larger than the largest supported pixel value raises OverflowError
+    // in Pillow (e.g. 2**80 on any mode). Check this before the normal extraction
+    // path so we don't silently truncate via f64 casts.
+    if color.cast::<pyo3::types::PyInt>().is_ok() && color.extract::<i64>().is_err() {
+        return Err(pyo3::exceptions::PyOverflowError::new_err(
+            "color value out of range",
+        ));
+    }
     // For 16-bit integer modes (stored as Luma16), a scalar int should be split into LE bytes
     let is_16bit = matches!(mode, "I" | "F" | "I;16" | "I;16L" | "I;16B" | "I;16N");
     if is_16bit {
@@ -81,12 +89,24 @@ pub fn extract_color_bytes(color: &Bound<'_, PyAny>, mode: &str) -> PyResult<Vec
             return Ok(vec![lo, hi, 0, 255]);
         }
     }
+    // Helper: number of channels for a mode (used for scalar expansion).
+    // Modes with an alpha channel get alpha = same scalar value (Pillow compat).
+    let n_channels = match mode {
+        "L" | "P" => 1usize,
+        "LA" | "PA" => 2,
+        "RGB" => 3,
+        "RGBA" => 4,
+        _ => 4, // safe default — underlying storage is always 4 bytes
+    };
+    // Scalar u8: expand to all channels (including alpha if present)
     if let Ok(v) = color.extract::<u8>() {
-        return Ok(vec![v, v, v, 255]);
+        let alpha = if n_channels >= 4 { v } else { 255 };
+        return Ok(vec![v, v, v, alpha]);
     }
     if let Ok(v) = color.extract::<f64>() {
         let b = v.clamp(0.0, 255.0) as u8;
-        return Ok(vec![b, b, b, 255]);
+        let alpha = if n_channels >= 4 { b } else { 255 };
+        return Ok(vec![b, b, b, alpha]);
     }
     if let Ok(t) = color.extract::<(u8, u8, u8, u8)>() {
         return Ok(vec![t.0, t.1, t.2, t.3]);
@@ -101,10 +121,18 @@ pub fn extract_color_bytes(color: &Bound<'_, PyAny>, mode: &str) -> PyResult<Vec
     // 1-element tuple e.g. (5,) — treat as grayscale
     if let Ok(v) = color.extract::<Vec<u8>>() {
         if let Some(&b) = v.first() {
-            return Ok(vec![b, b, b, 255]);
+            let alpha = if n_channels >= 4 { b } else { 255 };
+            return Ok(vec![b, b, b, alpha]);
         }
     }
     if let Ok(v) = color.extract::<i32>() {
+        // Packed RGB integer (e.g. 0xFF0000 for red) — alpha stays 255
+        // unless mode is RGBA and v fits in a single byte (0..=255), in
+        // which case it means "all channels = v" just like a scalar u8.
+        if n_channels >= 4 && (0..=255).contains(&v) {
+            let b = v as u8;
+            return Ok(vec![b, b, b, b]);
+        }
         return Ok(vec![
             ((v >> 16) & 0xFF) as u8,
             ((v >> 8) & 0xFF) as u8,
@@ -253,8 +281,27 @@ fn save_to_bytes<'py>(
             .flatten()
             .and_then(|v| v.extract::<u8>().ok())
     });
-    let data = pil_rust_core::save_with_options(&im.handle, &format.to_ascii_lowercase(), quality)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    // Extract optimize from kwargs (used for GIF).  Default: true (matches
+    // GifImagePlugin's encoderinfo.setdefault("optimize", True) behaviour).
+    let optimize: bool = kwargs
+        .and_then(|kw| kw.get_item("optimize").ok().flatten())
+        .map(|v| {
+            if let Ok(b) = v.extract::<bool>() {
+                b
+            } else if let Ok(i) = v.extract::<i64>() {
+                i != 0
+            } else {
+                true
+            }
+        })
+        .unwrap_or(true);
+    let data = pil_rust_core::save_with_options(
+        &im.handle,
+        &format.to_ascii_lowercase(),
+        quality,
+        optimize,
+    )
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Ok(pyo3::types::PyBytes::new(py, &data))
 }
 

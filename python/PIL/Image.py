@@ -2444,6 +2444,12 @@ class Image:
         if factor == (1, 1) and box == (0, 0) + self.size:
             return self.copy()
 
+        # Palette-indexed and bit-packed modes cannot be meaningfully downscaled
+        # via per-channel arithmetic; Pillow raises here for these modes.
+        if self.mode in ("P", "1", "I;16", "I;16L", "I;16B", "I;16N"):
+            msg = f"reduce() not supported for mode {self.mode!r}"
+            raise ValueError(msg)
+
         if self.mode in ["LA", "RGBA"]:
             im = self.convert({"LA": "La", "RGBA": "RGBa"}[self.mode])
             im = im.reduce(factor, box)
@@ -2650,7 +2656,13 @@ class Image:
         _gif_with_meta = _fast_fmt in ("GIF",) and (
             any(k in params for k in ("duration", "loop", "comment"))
             or bool(self.info.get("comment"))
+            or "transparency" in self.info
+            or params.get("transparency") is not None
         )
+        # gif_save_p_mode_indexed now handles L and 1 mode directly (with proper
+        # 256-entry grayscale palette), so there is no need to route those modes
+        # through the animated path.
+        _gif_luma_mode = False
         # GIF save with explicit palette kwarg: use gif_save_with_palette for P/L mode
         if _fast_fmt == "GIF" and _gif_custom_palette and _fast_target is not None:
             try:
@@ -2667,11 +2679,33 @@ class Image:
                     _pal_bytes = bytes(_pal_raw)
                 _append_imgs = list(params.get("append_images") or [])
 
+                # Build reverse lookup for custom palette: RGB → index
+                _custom_pal_n = len(_pal_bytes) // 3
+                _custom_rgb_to_idx: dict[tuple[int, int, int], int] = {}
+                for _ci in range(_custom_pal_n):
+                    _cr, _cg, _cb = _pal_bytes[_ci * 3], _pal_bytes[_ci * 3 + 1], _pal_bytes[_ci * 3 + 2]
+                    if (_cr, _cg, _cb) not in _custom_rgb_to_idx:
+                        _custom_rgb_to_idx[(_cr, _cg, _cb)] = _ci
+
+                def _remap_px_to_custom_pal(px_img: "Image") -> bytes:
+                    """Remap P-mode pixel indices from the image's own palette to _pal_bytes."""
+                    if px_img.mode not in ("P", "PA") or not px_img.palette:
+                        return px_img.im.tobytes() if px_img.mode in ("P", "L") else px_img.convert("P").im.tobytes()
+                    orig_pal = bytes(px_img.palette.palette)
+                    orig_n = len(orig_pal) // 3
+                    # Build remap table: orig_idx → custom_idx
+                    remap: list[int] = []
+                    for _oi in range(orig_n):
+                        _or, _og, _ob = orig_pal[_oi * 3], orig_pal[_oi * 3 + 1], orig_pal[_oi * 3 + 2]
+                        remap.append(_custom_rgb_to_idx.get((_or, _og, _ob), 0))
+                    raw = px_img.im.tobytes()
+                    return bytes(remap[b] if b < len(remap) else 0 for b in raw)
+
                 def _expand_pal_frames(img: "Image") -> "tuple[list[bytes], list[int]]":
-                    """Return (pixel_bytes_list, durations) for all frames."""
+                    """Return (pixel_bytes_list, durations) for all frames (remapped to custom palette)."""
                     if not hasattr(img, "n_frames") or img.n_frames <= 1:
                         img.load()
-                        _px = img.im.tobytes() if img.mode in ("P", "L") else img.convert("P").load() or img.convert("P").im.tobytes()
+                        _px = _remap_px_to_custom_pal(img)
                         return [_px], [int(img.info.get("duration", 0))]
                     _cur = img.tell() if hasattr(img, "tell") else 0
                     _frs: list[bytes] = []
@@ -2679,8 +2713,7 @@ class Image:
                     for _fi in range(img.n_frames):
                         img.seek(_fi)
                         img.load()
-                        _px = img.im.tobytes() if img.mode in ("P", "L") else img.convert("P").im.tobytes()
-                        _frs.append(_px)
+                        _frs.append(_remap_px_to_custom_pal(img))
                         _durs.append(int(img.info.get("duration", 0)))
                     img.seek(_cur)
                     return _frs, _durs
@@ -2722,7 +2755,7 @@ class Image:
                 return
             except Exception:
                 pass  # fall through
-        if _fast_fmt in ("GIF",) and (_is_animated_save or _gif_with_meta) and _fast_target is not None:
+        if _fast_fmt in ("GIF",) and (_is_animated_save or _gif_with_meta or _gif_luma_mode) and _fast_target is not None:
             try:
                 self.load()
                 _append_imgs = list(params.get("append_images") or [])
@@ -2768,19 +2801,102 @@ class Image:
                     _delays = [d if d > 0 else 100 for d in _frame_durations]
                 # Canvas size is the first frame's size
                 _canvas_size = _all_frames[0].size if _all_frames else self.size
-                _frame_handles = []
-                for _f in _all_frames:
+                # Collect disposal methods: scalar or per-frame list
+                _disposal_param = params.get("disposal")
+                if _disposal_param is None:
+                    _disposals_src: list[int] = [0] * len(_all_frames)
+                elif isinstance(_disposal_param, (list, tuple)):
+                    _disposals_src = [int(d) for d in _disposal_param]
+                else:
+                    _disposals_src = [int(_disposal_param)] * len(_all_frames)
+                # Warn when saving multi-frame RGB images with bytes transparency
+                # (same warning Pillow's GifImagePlugin issues in this case).
+                if _is_animated_save:
+                    _all_trans = [params.get("transparency")] + [
+                        _af.info.get("transparency") for _af in _all_frames
+                    ]
+                    for _at in _all_trans:
+                        if isinstance(_at, bytes):
+                            warnings.warn(
+                                "Palette images with Transparency expressed in bytes "
+                                "should be converted to RGBA images",
+                                UserWarning,
+                                stacklevel=2,
+                            )
+                            break
+                # Global transparency from save param (or None for per-frame lookup)
+                _global_trans = params.get("transparency")
+                _processed: list = []  # list of (Image, delay_ms, disposal, transparency)
+                for _i, _f in enumerate(_all_frames):
                     _f.load()
-                    # GIF doesn't support 1-bit; convert to L (grayscale) like real Pillow
-                    if _f.mode == "1":
+                    # GIF doesn't support 1-bit or I-mode; convert to L (grayscale)
+                    if _f.mode in ("1", "I"):
                         _f = _f.convert("L")
                         _f.load()
                     # Resize frames that don't match the canvas size
                     if _f.size != _canvas_size:
                         _f = _f.resize(_canvas_size, resample=LANCZOS)
                         _f.load()
-                    _frame_handles.append(_f.im)
+                    _d = _delays[_i] if _i < len(_delays) else (_delays[-1] if _delays else 100)
+                    _disp = _disposals_src[_i] if _i < len(_disposals_src) else (_disposals_src[-1] if _disposals_src else 0)
+                    # Per-frame transparency index (int) or None
+                    if _global_trans is not None:
+                        if isinstance(_global_trans, int):
+                            _t: int | None = _global_trans
+                        elif isinstance(_global_trans, (tuple, list)) and len(_global_trans) >= 3 and _f.mode in ("RGB", "RGBA", "P"):
+                            # RGB tuple transparency: find/add the color in the frame's palette
+                            _t = _gif_resolve_rgb_trans(_f, tuple(_global_trans[:3]))
+                        else:
+                            _t = None
+                    else:
+                        _t_raw = _f.info.get("transparency")
+                        if isinstance(_t_raw, int):
+                            _t = _t_raw
+                        elif isinstance(_t_raw, (tuple, list)) and len(_t_raw) >= 3 and _f.mode in ("RGB", "RGBA", "P"):
+                            _t = _gif_resolve_rgb_trans(_f, tuple(_t_raw[:3]))
+                        else:
+                            _t = None
+                    # Identical-frame deduplication: if this frame's pixels match the
+                    # previous frame, just accumulate the duration (like Pillow does).
+                    # For P-mode frames, compare rendered RGBA (not raw palette indices)
+                    # since different palettes can map the same indices to different colors.
+                    if _processed:
+                        _prev = _processed[-1][0]
+                        _prev_pal = bytes(_prev.palette.palette) if _prev.palette else b""
+                        _cur_pal = bytes(_f.palette.palette) if _f.palette else b""
+                        if _prev_pal != _cur_pal and (_prev.mode == "P" or _f.mode == "P"):
+                            _cmp_prev = _prev.convert("RGBA").im.tobytes()
+                            _cmp_cur = _f.convert("RGBA").im.tobytes()
+                        else:
+                            _cmp_prev = _prev.im.tobytes()
+                            _cmp_cur = _f.im.tobytes()
+                        if _cmp_cur == _cmp_prev:
+                            _processed[-1] = (_processed[-1][0], _processed[-1][1] + _d, _processed[-1][2], _processed[-1][3])
+                        else:
+                            _processed.append((_f, _d, _disp, _t))
+                    else:
+                        _processed.append((_f, _d, _disp, _t))
+                _frame_handles = [_p[0].im for _p in _processed]
+                _delays = [_p[1] for _p in _processed]
+                _frame_disposals = [_p[2] for _p in _processed]
+                _frame_trans = [_p[3] for _p in _processed]
                 _data = core.gif_save_animated(_frame_handles, _delays, int(_loop))
+                # Patch disposal methods and transparency into GCE blocks
+                _data = _patch_gif_gce(_data, _frame_disposals, _frame_trans)
+                # For single-frame luma saves: downgrade to GIF87a unless 89a is needed.
+                # Multi-frame and saves with timing/loop info always need GIF89a.
+                if _gif_luma_mode and not _is_animated_save and _data[:6] == b"GIF89a":
+                    _needs_89a = (
+                        self.info.get("version") == b"89a"
+                        or "transparency" in self.info
+                        or params.get("transparency") is not None
+                        or params.get("loop") is not None
+                        or params.get("duration")
+                        or params.get("comment")
+                        or self.info.get("comment")
+                    )
+                    if not _needs_89a:
+                        _data = b"GIF87a" + _data[6:]
                 # Patch background color index in GIF logical screen descriptor (byte 11)
                 _bg = params.get("background", self.info.get("background"))
                 if isinstance(_bg, int) and len(_data) >= 12:
@@ -2809,7 +2925,12 @@ class Image:
         if _fast_fmt and _fast_target is not None and not _is_animated_save and not _gif_custom_palette:
             try:
                 self.load()
-                _data = core.save_to_bytes(self.im, _fast_fmt, **params)
+                _im_to_save = self
+                # GIF: convert mode-I to mode-L like real Pillow does
+                if _fast_fmt == "GIF" and self.mode == "I":
+                    _im_to_save = self.convert("L")
+                    _im_to_save.load()
+                _data = core.save_to_bytes(_im_to_save.im, _fast_fmt, **params)
                 # GIF version: downgrade to GIF87a unless GIF89a features are needed.
                 # Matches GifImagePlugin._get_header() logic exactly.
                 if _fast_fmt == "GIF" and _data[:6] == b"GIF89a":
@@ -3944,6 +4065,219 @@ def _inject_gif_comment(gif_data: bytes, comment: bytes) -> bytes:
     if has_gct:
         offset += 3 * (2 ** (gct_size + 1))
     return gif_data[:offset] + bytes(ext) + gif_data[offset:]
+
+
+def _gif_rgba_to_p(frame: "Image") -> "tuple[Image, int | None]":
+    """Convert an RGBA frame to P mode with a GIF transparency index.
+
+    Returns (p_mode_image, transparency_index).  If no transparent pixels
+    are found, transparency_index is None.  The caller should replace the
+    original frame with the returned image before passing to gif_save_animated.
+    """
+    rgba_data = frame.im.tobytes()
+    w, h = frame.size
+    n = w * h
+
+    # Find which pixels are transparent (alpha == 0) and collect unique
+    # opaque RGB colors.
+    has_transparent = False
+    opaque_colors: set[tuple[int, int, int]] = set()
+    for i in range(n):
+        a = rgba_data[i * 4 + 3]
+        if a == 0:
+            has_transparent = True
+        else:
+            opaque_colors.add((rgba_data[i * 4], rgba_data[i * 4 + 1], rgba_data[i * 4 + 2]))
+
+    if not has_transparent:
+        # No alpha transparency — keep as RGBA (caller didn't change _t)
+        return frame, None
+
+    # Choose a transparency palette index: use 255 if there are ≤255 opaque
+    # colors, otherwise fall back to 0 (palette is full).
+    trans_idx = 255 if len(opaque_colors) < 256 else 0
+
+    # Build palette: map each opaque color to an index, reserve trans_idx.
+    color_to_idx: dict[tuple[int, int, int], int] = {}
+    next_idx = 0
+    for rgb in opaque_colors:
+        if next_idx == trans_idx:
+            next_idx += 1
+        color_to_idx[rgb] = next_idx
+        next_idx += 1
+
+    # Build 256-entry (768-byte) palette data.
+    pal = bytearray(768)
+    for rgb, idx in color_to_idx.items():
+        pal[idx * 3] = rgb[0]
+        pal[idx * 3 + 1] = rgb[1]
+        pal[idx * 3 + 2] = rgb[2]
+
+    # Build pixel index array.
+    indices = bytearray(n)
+    for i in range(n):
+        a = rgba_data[i * 4 + 3]
+        if a == 0:
+            indices[i] = trans_idx
+        else:
+            rgb = (rgba_data[i * 4], rgba_data[i * 4 + 1], rgba_data[i * 4 + 2])
+            indices[i] = color_to_idx.get(rgb, trans_idx)
+
+    p_im = core.new("P", frame.size)
+    p_im.frombytes(bytes(indices))
+    p_im.putpalette("RGB", "RGB", bytes(pal))
+
+    result = frame._new(p_im)
+    from PIL import ImagePalette
+    result.palette = ImagePalette.ImagePalette("RGB", bytes(pal))
+    result.info = dict(frame.info)
+    result.info["transparency"] = trans_idx
+    return result, trans_idx
+
+
+def _gif_resolve_rgb_trans(frame: "Image", rgb: "tuple[int, int, int]") -> "int | None":
+    """Resolve an RGB transparency color to a palette index for GIF saving.
+
+    For P-mode images: searches the existing palette.
+    For RGB/RGBA images: counts distinct pixel colors to determine whether the
+    palette would be full after quantization (max 256 colors for GIF).
+
+    Returns the palette index to use, or None (with a UserWarning) if the
+    palette is full and the transparency color cannot be accommodated.
+    """
+    if frame.mode in ("P", "PA") and frame.palette:
+        pal_bytes = bytes(frame.palette.palette)
+        n = len(pal_bytes) // 3
+        for i in range(n):
+            if (pal_bytes[i * 3], pal_bytes[i * 3 + 1], pal_bytes[i * 3 + 2]) == rgb:
+                return i
+        # P-mode but not found in palette: reserve last slot
+        return 255
+    # RGB/RGBA: count distinct colors to see if the palette has room
+    try:
+        frame.load()
+        pixel_data = frame.im.tobytes()
+        step = len(pixel_data) // (frame.size[0] * frame.size[1])  # bytes per pixel
+        distinct: set[tuple[int, int, int]] = set()
+        for i in range(0, len(pixel_data), step):
+            distinct.add((pixel_data[i], pixel_data[i + 1], pixel_data[i + 2]))
+    except Exception:
+        distinct = set()
+    if len(distinct) >= 256:
+        # All 256 palette slots are taken; can't add the transparency color.
+        warnings.warn(
+            "Couldn't allocate palette entry for transparency",
+            UserWarning,
+            stacklevel=4,
+        )
+        return None
+    # There's room: reserve the last slot (255) for the transparency color.
+    # The GIF encoder will leave that slot unused by the actual pixel data.
+    return 255
+
+
+def _patch_gif_gce(
+    data: bytes,
+    disposals: "list[int] | int",
+    transparencies: "list[int | None] | int | None" = None,
+) -> bytes:
+    """Post-process GIF bytes to set per-frame disposal methods and transparency.
+
+    Parses the GIF structure, finds each IMAGE_DESC's preceding GCE (Graphic
+    Control Extension), and patches:
+      - the 3-bit disposal method field in the packed byte
+      - the transparency flag and transparency color index (if requested)
+
+    ``disposals`` may be a single int (applied to all frames) or a list.
+    ``transparencies`` may be None (no change), a single int (applied to all
+    frames), or a list of (int | None) per frame.
+    """
+    mutable = bytearray(data)
+    if isinstance(disposals, int):
+        disposals_list: list[int] = [disposals]
+    else:
+        disposals_list = list(disposals)
+    if transparencies is None:
+        trans_list: list[int | None] = [None]
+    elif isinstance(transparencies, int):
+        trans_list = [transparencies]
+    else:
+        trans_list = list(transparencies)
+
+    # Skip 6-byte signature + 7-byte logical screen descriptor + GCT
+    if len(mutable) < 13:
+        return bytes(mutable)
+    packed_lsd = mutable[10]
+    gct_flag = (packed_lsd >> 7) & 1
+    gct_size = packed_lsd & 0x07
+    pos = 13 + (3 * (1 << (gct_size + 1)) if gct_flag else 0)
+
+    frame_idx = 0
+    last_gce_pos = -1  # byte offset of the most-recently seen GCE
+
+    while pos < len(mutable):
+        b = mutable[pos]
+        if b == 0x3B:  # Trailer
+            break
+        elif b == 0x21:  # Extension introducer
+            if pos + 1 >= len(mutable):
+                break
+            label = mutable[pos + 1]
+            if label == 0xF9:  # Graphic Control Extension (fixed 8-byte block)
+                last_gce_pos = pos
+                pos += 8
+            else:
+                # Other extension: skip sub-blocks
+                pos += 2  # introducer + label
+                while pos < len(mutable):
+                    sz = mutable[pos]
+                    pos += 1 + sz
+                    if sz == 0:
+                        break
+        elif b == 0x2C:  # Image Descriptor
+            if last_gce_pos >= 0:
+                # Patch disposal method
+                n = frame_idx
+                disposal = (
+                    disposals_list[n]
+                    if n < len(disposals_list)
+                    else disposals_list[-1]
+                )
+                trans = (
+                    trans_list[n] if n < len(trans_list) else trans_list[-1]
+                )
+                old_packed = mutable[last_gce_pos + 3]
+                new_packed = (old_packed & ~0x1C) | ((disposal & 0x07) << 2)
+                if trans is not None:
+                    # Explicitly set transparency index from Python-side metadata.
+                    new_packed |= 0x01
+                    mutable[last_gce_pos + 6] = trans & 0xFF
+                # When trans is None, preserve the trans_flag that the encoder
+                # (image-rs) already wrote — do NOT clear it.
+                mutable[last_gce_pos + 3] = new_packed
+
+            # Skip Image Descriptor (10 bytes) + optional LCT + LZW data
+            pos += 10
+            if pos > len(mutable):
+                break
+            lct_flag = (mutable[pos - 1] >> 7) & 1
+            lct_size = mutable[pos - 1] & 0x07
+            if lct_flag:
+                pos += 3 * (1 << (lct_size + 1))
+            if pos < len(mutable):
+                pos += 1  # min LZW code size
+            while pos < len(mutable):
+                sz = mutable[pos]
+                pos += 1 + sz
+                if sz == 0:
+                    break
+
+            frame_idx += 1
+            last_gce_pos = -1
+        else:
+            pos += 1
+
+    return bytes(mutable)
 
 
 def _inject_jpeg_icc(jpeg_data: bytes, icc_bytes: bytes) -> bytes:

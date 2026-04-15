@@ -223,6 +223,9 @@ class BoxBlur(MultibandFilter):
         xy = self.radius
         if isinstance(xy, (int, float)):
             xy = (xy, xy)
+        if xy[0] < 0 or xy[1] < 0:
+            msg = "radius must be >= 0"
+            raise ValueError(msg)
         if xy == (0, 0):
             return image.copy()
         return image.box_blur(xy)

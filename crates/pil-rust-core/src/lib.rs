@@ -140,6 +140,209 @@ fn grayscale_palette_256() -> Vec<u8> {
     pal
 }
 
+/// Save a P-mode ImageHandle as a GIF, preserving raw palette indices and the
+/// colour table.
+///
+/// When `optimize=false`: use the full source palette unchanged (256 entries for
+/// a default P-mode image), matching Pillow's `optimize=False` behaviour.
+/// When `optimize=true` and the image is ≤ 512×512: compact the palette by
+/// remapping pixel indices to start at 0 and using the smallest power-of-2 GCT.
+/// For large images (> 512×512) `optimize=true` behaves like `optimize=false`
+/// (full 256-entry GCT), matching GifImagePlugin's heuristic.
+fn gif_save_p_mode_indexed(handle: &ImageHandle, optimize: bool) -> Result<Vec<u8>> {
+    let (luma, pal_bytes, stride) = match (&handle.inner, &handle.palette) {
+        (DynamicImage::ImageLuma8(l), Some(p)) => {
+            let stride = if handle.palette_mode.as_deref() == Some("RGBA") {
+                4usize
+            } else {
+                3
+            };
+            (l, p, stride)
+        }
+        _ => {
+            // Fall back to RGBA path for unexpected variants.
+            let rgba = DynamicImage::ImageRgba8(palette_indexed_to_rgba(handle));
+            let mut buf = Cursor::new(Vec::new());
+            rgba.write_to(&mut buf, ImageFormat::Gif)?;
+            return Ok(buf.into_inner());
+        }
+    };
+
+    let width = luma.width() as u16;
+    let height = luma.height() as u16;
+    let total_px = (luma.width() as u64) * (luma.height() as u64);
+    let pixels: Vec<u8> = luma.pixels().map(|p| p.0[0]).collect();
+
+    // Decide whether to optimise.  Large images always get a full 256-entry GCT.
+    let do_optimize = optimize && total_px <= 262_144;
+
+    let (final_pixels, gct) = if do_optimize {
+        // --- Optimised path ---
+        // Collect and sort the distinct pixel indices actually used.
+        let mut seen = [false; 256];
+        for &p in &pixels {
+            seen[p as usize] = true;
+        }
+        let sorted_used: Vec<u8> = (0u8..=255).filter(|&i| seen[i as usize]).collect();
+        let distinct = sorted_used.len().max(1);
+
+        // Build old-index → new-index mapping.
+        let mut mapping = [0u8; 256];
+        for (new_idx, &old_idx) in sorted_used.iter().enumerate() {
+            mapping[old_idx as usize] = new_idx as u8;
+        }
+
+        // Remap pixel values.
+        let remapped: Vec<u8> = pixels.iter().map(|&p| mapping[p as usize]).collect();
+
+        // Choose GCT size: smallest power-of-2 ≥ distinct.
+        // Minimum is 4 entries to match Pillow's _get_color_table_size which
+        // returns at least 1 (meaning 2<<1 = 4 entries) for any non-empty palette.
+        let mut n_entries = 4usize;
+        while n_entries < distinct {
+            n_entries <<= 1;
+        }
+
+        // Build compact GCT.
+        let _src_entries = pal_bytes.len() / stride;
+        let mut gct = vec![0u8; n_entries * 3];
+        for (new_idx, &old_idx) in sorted_used.iter().enumerate() {
+            let base = old_idx as usize * stride;
+            if base + stride <= pal_bytes.len() {
+                gct[new_idx * 3] = pal_bytes[base];
+                gct[new_idx * 3 + 1] = pal_bytes[base + 1];
+                gct[new_idx * 3 + 2] = pal_bytes[base + 2];
+            }
+        }
+
+        (remapped, gct)
+    } else {
+        // --- Non-optimised path ---
+        // Use a 256-entry GCT taken from the source palette (or zero-padded).
+        let n_entries = 256usize;
+        let src_entries = pal_bytes.len() / stride;
+        let mut gct = vec![0u8; n_entries * 3];
+        for i in 0..n_entries.min(src_entries) {
+            gct[i * 3] = pal_bytes[i * stride];
+            gct[i * 3 + 1] = pal_bytes[i * stride + 1];
+            gct[i * 3 + 2] = pal_bytes[i * stride + 2];
+        }
+        (pixels, gct)
+    };
+
+    // Write GIF manually to avoid the gif crate's forced GCE block and to
+    // use the correct LZW min-code-size (based on GCT size, not pixel range).
+    write_static_gif(width, height, &final_pixels, &gct)
+}
+
+/// Write a single-frame static GIF without a Graphic Control Extension (GCE).
+///
+/// The gif crate always emits a GCE block even for delay=0 no-transparency frames.
+/// Pillow's GIF encoder omits the GCE in that case, so we must write the raw bytes
+/// ourselves to match the expected output size exactly.
+///
+/// LZW min-code-size is always 8, matching Pillow's `_write_local_header` which
+/// unconditionally writes `o8(8)` as the LZW minimum code size.
+fn write_static_gif(width: u16, height: u16, pixels: &[u8], gct: &[u8]) -> Result<Vec<u8>> {
+    // gct must be n*3 bytes; n must be a power of 2.
+    let n_entries = gct.len() / 3;
+    // GCT size field N: the GCT holds 2^(N+1) entries. log2(n_entries) - 1.
+    let gct_size_field = (n_entries.trailing_zeros() as u8).saturating_sub(1);
+    // Pillow always uses LZW min-code-size 8, regardless of palette size.
+    let lzw_min: u8 = 8;
+
+    let mut out = Vec::with_capacity(6 + 7 + gct.len() + 10 + pixels.len() / 2 + 16);
+
+    // ---- Header ----
+    out.extend_from_slice(b"GIF89a");
+
+    // ---- Logical Screen Descriptor ----
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    // packed byte: GCT present (bit7=1), color-resolution bits6-4 = 0 (matches Pillow),
+    // sort=0, GCT size field in bits2-0.
+    let packed_lsd: u8 = 0b1000_0000 | gct_size_field;
+    out.push(packed_lsd);
+    out.push(0); // background color index
+    out.push(0); // pixel aspect ratio
+
+    // ---- Global Color Table ----
+    out.extend_from_slice(gct);
+
+    // ---- Image Descriptor (no GCE!) ----
+    out.push(0x2C); // Image Separator
+    out.extend_from_slice(&0u16.to_le_bytes()); // left
+    out.extend_from_slice(&0u16.to_le_bytes()); // top
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    out.push(0); // packed: no LCT, no interlace, no sort
+
+    // ---- LZW Image Data ----
+    gif_lzw_encode(&mut out, pixels, lzw_min)?;
+
+    // ---- Trailer ----
+    out.push(0x3B);
+
+    Ok(out)
+}
+
+/// LZW-encode `pixels` at `min_code_size` and write as GIF sub-blocks into `out`.
+fn gif_lzw_encode(out: &mut Vec<u8>, pixels: &[u8], min_code_size: u8) -> Result<()> {
+    use weezl::{encode::Encoder as LzwEncoder, BitOrder};
+
+    out.push(min_code_size);
+
+    let mut enc = LzwEncoder::new(BitOrder::Lsb, min_code_size);
+    let encoded = enc
+        .encode(pixels)
+        .map_err(|e| PilError::InvalidOperation(format!("LZW encode error: {e}")))?;
+
+    // Write as GIF sub-blocks (each at most 255 bytes).
+    for chunk in encoded.chunks(255) {
+        out.push(chunk.len() as u8);
+        out.extend_from_slice(chunk);
+    }
+    out.push(0); // block terminator
+
+    Ok(())
+}
+
+/// Convert an ImageHandle to an Rgba8 image, applying the palette for P-mode images.
+///
+/// For palette-indexed (P-mode) handles (`mode_override == Some("P")`), each
+/// pixel value is a palette index; we look up the corresponding RGB or RGBA
+/// entry and build a true-colour RGBA image.  For all other modes we fall back
+/// to `DynamicImage::to_rgba8()`.
+fn palette_indexed_to_rgba(handle: &ImageHandle) -> image::RgbaImage {
+    if handle.mode_override == Some("P") {
+        if let (DynamicImage::ImageLuma8(luma), Some(pal)) = (&handle.inner, &handle.palette) {
+            let stride = if handle.palette_mode.as_deref() == Some("RGBA") {
+                4usize
+            } else {
+                3usize
+            };
+            let (w, h) = (luma.width(), luma.height());
+            let mut out = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::new(w, h);
+            for (x, y, px) in luma.enumerate_pixels() {
+                let idx = px.0[0] as usize;
+                let base = idx * stride;
+                let r = pal.get(base).copied().unwrap_or(0);
+                let g = pal.get(base + 1).copied().unwrap_or(0);
+                let b = pal.get(base + 2).copied().unwrap_or(0);
+                let a = if stride == 4 {
+                    pal.get(base + 3).copied().unwrap_or(255)
+                } else {
+                    255u8
+                };
+                out.put_pixel(x, y, image::Rgba([r, g, b, a]));
+            }
+            return out;
+        }
+    }
+    // Default: let image-rs convert whatever DynamicImage variant we have.
+    handle.inner.to_rgba8()
+}
+
 /// Check whether every frame is a grayscale (Luma8) image.
 fn all_luma8(frames: &[&ImageHandle]) -> bool {
     frames
@@ -174,7 +377,7 @@ pub fn gif_save_animated(
         let delay_ms = delays_ms.get(i).copied().unwrap_or(100);
         // GIF delay is in 10ms units
         let delay = image::Delay::from_numer_denom_ms(delay_ms, 1);
-        let rgba = handle.inner.to_rgba8();
+        let rgba = palette_indexed_to_rgba(handle);
         let frame = Frame::from_parts(rgba, 0, 0, delay);
         encoder.encode_frame(frame)?;
     }
@@ -320,9 +523,11 @@ pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<Im
             DynamicImage::ImageLumaA8(buf)
         }
         "1" => {
+            // Mode "1" stores raw byte values in Luma8; Pillow's semantics
+            // thread the raw value through new/putdata/getpixel unchanged and
+            // only threshold at save/convert time.
             let v = color.first().copied().unwrap_or(0);
-            let pixel = if v != 0 { 255u8 } else { 0u8 };
-            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([pixel]));
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([v]));
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageLuma8(buf),
                 mode_override: Some("1"),
@@ -332,19 +537,22 @@ pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<Im
         }
         "P" => {
             // Palette mode: pixels are indices (0-255); store as Luma8.
-            // Palette is empty until putpalette() is called.
+            // Default palette is the grayscale ramp (index i → RGB(i,i,i)),
+            // matching Pillow's ImagingPaletteNew("RGB") initialisation.
             let idx = color.first().copied().unwrap_or(0);
             let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([idx]));
+            let default_palette: Vec<u8> = (0..=255u8).flat_map(|i| [i, i, i]).collect();
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageLuma8(buf),
                 mode_override: Some("P"),
-                palette: Some(vec![0u8; 256 * 3]),
+                palette: Some(default_palette),
                 palette_mode: Some("RGB".to_string()),
             });
         }
         "PA" => {
             let idx = color.first().copied().unwrap_or(0);
-            let buf = ImageBuffer::from_fn(width, height, |_, _| image::LumaA([idx, 255]));
+            let a = color.get(1).copied().unwrap_or(255);
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::LumaA([idx, a]));
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageLumaA8(buf),
                 mode_override: Some("PA"),
@@ -376,8 +584,8 @@ pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<Im
         }
         // RGBX: 4-channel (R, G, B, X), stored as RGBA with X in alpha channel
         "RGBX" => {
-            let (r, g, b) = parse_rgb(color);
-            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Rgba([r, g, b, 0]));
+            let (r, g, b, x) = parse_rgba(color);
+            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Rgba([r, g, b, x]));
             return Ok(ImageHandle {
                 inner: DynamicImage::ImageRgba8(buf),
                 mode_override: Some("RGBX"),
@@ -416,33 +624,17 @@ pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<Im
                 palette_mode: None,
             });
         }
-        // F: 32-bit float, approximated as Luma16 with mode_override
-        "F" => {
-            let v = color.first().copied().unwrap_or(0) as u16;
-            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([v]));
-            return Ok(ImageHandle {
-                inner: DynamicImage::ImageLuma16(buf),
-                mode_override: Some("F"),
-                palette: None,
-                palette_mode: None,
-            });
-        }
-        // I: 32-bit signed int, stored as Luma16 (best approximation)
-        "I" => {
-            let v = color.first().copied().unwrap_or(0) as u16;
-            let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([v]));
-            return Ok(ImageHandle {
-                inner: DynamicImage::ImageLuma16(buf),
-                mode_override: Some("I"),
-                palette: None,
-                palette_mode: None,
-            });
-        }
-        // I;16* variants: 16-bit
-        "I;16" | "I;16B" | "I;16L" | "I;16N" => {
-            let v = color.first().copied().unwrap_or(0) as u16;
+        // 16-bit-storage modes: the color bytes buffer is always [lo, hi, ...]
+        // (little-endian), regardless of whether the logical mode is I;16B.
+        // extract_color_bytes() packs the scalar u32 as [lo, hi, 0, 255].
+        "F" | "I" | "I;16" | "I;16B" | "I;16L" | "I;16N" => {
+            let lo = color.first().copied().unwrap_or(0) as u16;
+            let hi = color.get(1).copied().unwrap_or(0) as u16;
+            let v = lo | (hi << 8);
             let buf = ImageBuffer::from_fn(width, height, |_, _| image::Luma([v]));
             let m: &'static str = match mode {
+                "F" => "F",
+                "I" => "I",
                 "I;16" => "I;16",
                 "I;16B" => "I;16B",
                 "I;16L" => "I;16L",
@@ -467,13 +659,14 @@ pub fn new_image(mode: &str, width: u32, height: u32, color: &[u8]) -> Result<Im
 }
 
 pub fn save(handle: &ImageHandle, format: &str) -> Result<Vec<u8>> {
-    save_with_options(handle, format, None)
+    save_with_options(handle, format, None, true)
 }
 
 pub fn save_with_options(
     handle: &ImageHandle,
     format: &str,
     quality: Option<u8>,
+    optimize: bool,
 ) -> Result<Vec<u8>> {
     let mut buf = Cursor::new(Vec::new());
     match format.to_ascii_lowercase().as_str() {
@@ -484,8 +677,48 @@ pub fn save_with_options(
             rgb.write_with_encoder(encoder)?;
         }
         "gif" => {
-            // image-rs GIF encoder requires RGBA8 (it quantizes internally)
-            let rgba = DynamicImage::ImageRgba8(handle.inner.to_rgba8());
+            // For palette-indexed (P-mode) images, preserve the raw pixel
+            // indices and the actual colour table instead of converting to
+            // RGBA and letting image-rs re-quantize (which loses index info).
+            if handle.mode_override == Some("P") {
+                return gif_save_p_mode_indexed(handle, optimize);
+            }
+            // For L-mode and 1-mode (Luma8 storage), convert to P-mode with
+            // a 256-entry grayscale palette and use the indexed GIF path.
+            // "1" mode never optimises (matches GifImagePlugin behaviour).
+            if matches!(&handle.inner, DynamicImage::ImageLuma8(_)) {
+                let luma_optimize = optimize && handle.mode_override != Some("1");
+                let grayscale_pal: Vec<u8> = (0..=255u8).flat_map(|i| [i, i, i]).collect();
+                // For mode "1" input, threshold pixel bytes to 0/255 first so
+                // that the round-trip 1 → GIF → L gives 255 (Pillow behaviour).
+                let luma_buf = if handle.mode_override == Some("1") {
+                    if let DynamicImage::ImageLuma8(b) = &handle.inner {
+                        let thresholded: Vec<u8> = b
+                            .as_raw()
+                            .iter()
+                            .map(|&v| if v != 0 { 255 } else { 0 })
+                            .collect();
+                        DynamicImage::ImageLuma8(
+                            image::ImageBuffer::from_raw(b.width(), b.height(), thresholded)
+                                .unwrap(),
+                        )
+                    } else {
+                        handle.inner.clone()
+                    }
+                } else {
+                    handle.inner.clone()
+                };
+                let p_handle = ImageHandle {
+                    inner: luma_buf,
+                    mode_override: Some("P"),
+                    palette: Some(grayscale_pal),
+                    palette_mode: Some("RGB".to_string()),
+                };
+                return gif_save_p_mode_indexed(&p_handle, luma_optimize);
+            }
+            // For all other modes, use palette_indexed_to_rgba and let
+            // image-rs quantize.
+            let rgba = DynamicImage::ImageRgba8(palette_indexed_to_rgba(handle));
             rgba.write_to(&mut buf, image::ImageFormat::Gif)?;
         }
         _ => {
@@ -502,6 +735,27 @@ pub fn save_with_options(
 
 pub fn size(handle: &ImageHandle) -> (u32, u32) {
     handle.inner.dimensions()
+}
+
+/// Number of bands (channels) for the image. Mirrors `Image.bands`.
+pub fn bands(handle: &ImageHandle) -> usize {
+    match mode(handle) {
+        "1" | "L" | "P" | "I" | "F" | "I;16" | "I;16L" | "I;16B" | "I;16N" => 1,
+        "LA" | "PA" | "La" => 2,
+        "RGB" | "YCbCr" | "LAB" | "HSV" => 3,
+        "RGBA" | "CMYK" | "RGBX" | "RGBa" => 4,
+        _ => match &handle.inner {
+            DynamicImage::ImageLuma8(_) | DynamicImage::ImageLuma16(_) => 1,
+            DynamicImage::ImageLumaA8(_) | DynamicImage::ImageLumaA16(_) => 2,
+            DynamicImage::ImageRgb8(_)
+            | DynamicImage::ImageRgb16(_)
+            | DynamicImage::ImageRgb32F(_) => 3,
+            DynamicImage::ImageRgba8(_)
+            | DynamicImage::ImageRgba16(_)
+            | DynamicImage::ImageRgba32F(_) => 4,
+            _ => 3,
+        },
+    }
 }
 
 pub fn mode(handle: &ImageHandle) -> &'static str {
@@ -584,6 +838,19 @@ pub fn putpixel(handle: &mut ImageHandle, x: u32, y: u32, color: [u8; 4]) {
 
 pub fn resize(handle: &ImageHandle, w: u32, h: u32, filter: &str) -> ImageHandle {
     let f = parse_filter(filter);
+
+    // P-mode images store palette indices — interpolating index values is
+    // meaningless, so always use nearest-neighbour and copy the palette across.
+    if handle.mode_override == Some("P") {
+        return ImageHandle {
+            inner: handle
+                .inner
+                .resize_exact(w, h, image::imageops::FilterType::Nearest),
+            mode_override: handle.mode_override,
+            palette: handle.palette.clone(),
+            palette_mode: handle.palette_mode.clone(),
+        };
+    }
 
     // For non-nearest filters on alpha-bearing images, use alpha-premultiplied
     // interpolation to avoid colour bleed from transparent pixels.
@@ -854,9 +1121,9 @@ pub fn transpose(handle: &ImageHandle, method: u8) -> Result<ImageHandle> {
     };
     Ok(ImageHandle {
         inner: out,
-        mode_override: None,
-        palette: None,
-        palette_mode: None,
+        mode_override: handle.mode_override,
+        palette: handle.palette.clone(),
+        palette_mode: handle.palette_mode.clone(),
     })
 }
 
@@ -1578,9 +1845,9 @@ pub fn filter(handle: &ImageHandle, name: &str, args: &[f32]) -> Result<ImageHan
     };
     Ok(ImageHandle {
         inner: out,
-        mode_override: None,
-        palette: None,
-        palette_mode: None,
+        mode_override: handle.mode_override,
+        palette: handle.palette.clone(),
+        palette_mode: handle.palette_mode.clone(),
     })
 }
 
@@ -2790,13 +3057,67 @@ pub fn merge(target_mode: &str, channels: &[&ImageHandle]) -> Result<ImageHandle
         |ch_idx: usize, x: u32, y: u32| -> u8 { channels[ch_idx].inner.get_pixel(x, y).0[0] };
 
     let img = match target_mode {
-        "L" => {
+        "L" | "1" | "P" => {
             if channels.is_empty() {
                 return Err(PilError::InvalidOperation("L requires 1 channel".into()));
             }
-            DynamicImage::ImageLuma8(ImageBuffer::from_fn(w, h, |x, y| {
-                image::Luma([get_ch(0, x, y)])
-            }))
+            let buf = ImageBuffer::from_fn(w, h, |x, y| image::Luma([get_ch(0, x, y)]));
+            // "1" and "P" piggyback on Luma8 storage via mode_override.
+            let tag: Option<&'static str> = match target_mode {
+                "1" => Some("1"),
+                "P" => Some("P"),
+                _ => None,
+            };
+            if tag.is_some() {
+                return Ok(ImageHandle {
+                    inner: DynamicImage::ImageLuma8(buf),
+                    mode_override: tag,
+                    palette: if target_mode == "P" {
+                        Some((0..=255u8).flat_map(|i| [i, i, i]).collect())
+                    } else {
+                        None
+                    },
+                    palette_mode: if target_mode == "P" {
+                        Some("RGB".into())
+                    } else {
+                        None
+                    },
+                });
+            }
+            DynamicImage::ImageLuma8(buf)
+        }
+        "I" | "F" | "I;16" | "I;16L" | "I;16B" | "I;16N" => {
+            if channels.is_empty() {
+                return Err(PilError::InvalidOperation(format!(
+                    "{target_mode} requires 1 channel"
+                )));
+            }
+            // 32-bit I/F are approximated as Luma16 (same as new_image).
+            // Each channel in `channels` is itself a 16-bit Luma image for I/F inputs,
+            // so we copy raw pixel values via the ImageHandle's underlying buffer.
+            let buf: image::ImageBuffer<image::Luma<u16>, Vec<u16>> =
+                ImageBuffer::from_fn(w, h, |x, y| {
+                    if let DynamicImage::ImageLuma16(b) = &channels[0].inner {
+                        *b.get_pixel(x, y)
+                    } else {
+                        image::Luma([get_ch(0, x, y) as u16])
+                    }
+                });
+            let tag: &'static str = match target_mode {
+                "I" => "I",
+                "F" => "F",
+                "I;16" => "I;16",
+                "I;16L" => "I;16L",
+                "I;16B" => "I;16B",
+                "I;16N" => "I;16N",
+                _ => unreachable!(),
+            };
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLuma16(buf),
+                mode_override: Some(tag),
+                palette: None,
+                palette_mode: None,
+            });
         }
         "LA" => {
             if channels.len() < 2 {
@@ -2813,6 +3134,28 @@ pub fn merge(target_mode: &str, channels: &[&ImageHandle]) -> Result<ImageHandle
             DynamicImage::ImageRgb8(ImageBuffer::from_fn(w, h, |x, y| {
                 image::Rgb([get_ch(0, x, y), get_ch(1, x, y), get_ch(2, x, y)])
             }))
+        }
+        "YCbCr" | "LAB" | "HSV" => {
+            if channels.len() < 3 {
+                return Err(PilError::InvalidOperation(format!(
+                    "{target_mode} requires 3 channels"
+                )));
+            }
+            let buf = ImageBuffer::from_fn(w, h, |x, y| {
+                image::Rgb([get_ch(0, x, y), get_ch(1, x, y), get_ch(2, x, y)])
+            });
+            let tag: &'static str = match target_mode {
+                "YCbCr" => "YCbCr",
+                "LAB" => "LAB",
+                "HSV" => "HSV",
+                _ => unreachable!(),
+            };
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageRgb8(buf),
+                mode_override: Some(tag),
+                palette: None,
+                palette_mode: None,
+            });
         }
         "RGBA" => {
             if channels.len() < 4 {
@@ -2842,6 +3185,48 @@ pub fn merge(target_mode: &str, channels: &[&ImageHandle]) -> Result<ImageHandle
                 mode_override: Some("PA"),
                 palette: channels[0].palette.clone(),
                 palette_mode: channels[0].palette_mode.clone(),
+            });
+        }
+        "La" => {
+            // L with premultiplied alpha — stored as LumaA8 with mode_override "La".
+            if channels.len() < 2 {
+                return Err(PilError::InvalidOperation("La requires 2 channels".into()));
+            }
+            let buf = ImageBuffer::from_fn(w, h, |x, y| {
+                image::LumaA([get_ch(0, x, y), get_ch(1, x, y)])
+            });
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageLumaA8(buf),
+                mode_override: Some("La"),
+                palette: None,
+                palette_mode: None,
+            });
+        }
+        "CMYK" | "RGBX" | "RGBa" => {
+            if channels.len() < 4 {
+                return Err(PilError::InvalidOperation(format!(
+                    "{target_mode} requires 4 channels"
+                )));
+            }
+            let buf = ImageBuffer::from_fn(w, h, |x, y| {
+                image::Rgba([
+                    get_ch(0, x, y),
+                    get_ch(1, x, y),
+                    get_ch(2, x, y),
+                    get_ch(3, x, y),
+                ])
+            });
+            let tag: &'static str = match target_mode {
+                "CMYK" => "CMYK",
+                "RGBX" => "RGBX",
+                "RGBa" => "RGBa",
+                _ => unreachable!(),
+            };
+            return Ok(ImageHandle {
+                inner: DynamicImage::ImageRgba8(buf),
+                mode_override: Some(tag),
+                palette: None,
+                palette_mode: None,
             });
         }
         _ => return Err(PilError::UnsupportedMode(target_mode.to_string())),
@@ -3423,27 +3808,6 @@ fn parse_format(format: &str) -> Result<ImageFormat> {
 // ---------------------------------------------------------------------------
 
 pub fn putdata(handle: &mut ImageHandle, data: &[u8]) {
-    // Mode "1": normalize any non-zero value to 255 (Pillow stores 0 or 255 internally)
-    if matches!(handle.mode_override, Some(m) if m == "1") {
-        let normalized: Vec<u8> = data.iter().map(|&v| if v != 0 { 255 } else { 0 }).collect();
-        let (w, h) = handle.inner.dimensions();
-        let mut idx = 0usize;
-        for y in 0..h {
-            for x in 0..w {
-                if idx >= normalized.len() {
-                    return;
-                }
-                putpixel(
-                    handle,
-                    x,
-                    y,
-                    [normalized[idx], normalized[idx], normalized[idx], 255],
-                );
-                idx += 1;
-            }
-        }
-        return;
-    }
     let (w, h) = handle.inner.dimensions();
     let bands = match &handle.inner {
         DynamicImage::ImageLuma8(_) => 1,
@@ -3467,6 +3831,75 @@ pub fn putdata(handle: &mut ImageHandle, data: &[u8]) {
             };
             putpixel(handle, x, y, color);
             idx += bands;
+        }
+    }
+}
+
+/// Scalar-sequence putdata: each value in `data` sets the FIRST channel of the
+/// corresponding pixel; other channels are left unchanged. Matches Pillow's
+/// behaviour when `putdata()` receives a flat integer list on a multi-band image.
+pub fn putdata_scalar(handle: &mut ImageHandle, data: &[u8]) {
+    let (w, h) = handle.inner.dimensions();
+    let mut idx = 0usize;
+    match &mut handle.inner {
+        DynamicImage::ImageLuma8(buf) => {
+            for y in 0..h {
+                for x in 0..w {
+                    if idx >= data.len() {
+                        return;
+                    }
+                    buf.put_pixel(x, y, image::Luma([data[idx]]));
+                    idx += 1;
+                }
+            }
+        }
+        DynamicImage::ImageLumaA8(buf) => {
+            for y in 0..h {
+                for x in 0..w {
+                    if idx >= data.len() {
+                        return;
+                    }
+                    let cur = *buf.get_pixel(x, y);
+                    buf.put_pixel(x, y, image::LumaA([data[idx], cur.0[1]]));
+                    idx += 1;
+                }
+            }
+        }
+        DynamicImage::ImageRgb8(buf) => {
+            for y in 0..h {
+                for x in 0..w {
+                    if idx >= data.len() {
+                        return;
+                    }
+                    let cur = *buf.get_pixel(x, y);
+                    buf.put_pixel(x, y, image::Rgb([data[idx], cur.0[1], cur.0[2]]));
+                    idx += 1;
+                }
+            }
+        }
+        DynamicImage::ImageRgba8(buf) => {
+            for y in 0..h {
+                for x in 0..w {
+                    if idx >= data.len() {
+                        return;
+                    }
+                    let cur = *buf.get_pixel(x, y);
+                    buf.put_pixel(x, y, image::Rgba([data[idx], cur.0[1], cur.0[2], cur.0[3]]));
+                    idx += 1;
+                }
+            }
+        }
+        _ => {
+            // Fallback: delegate to putpixel for unknown storage variants.
+            for y in 0..h {
+                for x in 0..w {
+                    if idx >= data.len() {
+                        return;
+                    }
+                    putpixel(handle, x, y, [data[idx], 0, 0, 255]);
+                    idx += 1;
+                }
+            }
         }
     }
 }
@@ -3995,9 +4428,9 @@ pub fn reduce(handle: &ImageHandle, factor_x: u32, factor_y: u32) -> ImageHandle
         .resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
     ImageHandle {
         inner: resized,
-        mode_override: None,
-        palette: None,
-        palette_mode: None,
+        mode_override: handle.mode_override,
+        palette: handle.palette.clone(),
+        palette_mode: handle.palette_mode.clone(),
     }
 }
 
@@ -4228,21 +4661,89 @@ pub fn entropy(handle: &ImageHandle, mask: Option<&ImageHandle>) -> f64 {
     e
 }
 
+/// Get the per-pixel channel layout (byte stride and channel count) for u8 DynamicImage variants.
+/// Returns (bytes, width, height, channels) for the storage, or None for non-u8 types.
+fn u8_channels(img: &DynamicImage) -> Option<(&[u8], u32, u32, usize)> {
+    match img {
+        DynamicImage::ImageLuma8(b) => Some((b.as_raw(), b.width(), b.height(), 1)),
+        DynamicImage::ImageLumaA8(b) => Some((b.as_raw(), b.width(), b.height(), 2)),
+        DynamicImage::ImageRgb8(b) => Some((b.as_raw(), b.width(), b.height(), 3)),
+        DynamicImage::ImageRgba8(b) => Some((b.as_raw(), b.width(), b.height(), 4)),
+        _ => None,
+    }
+}
+
+/// Build a u8 DynamicImage of the same variant as `template` from raw interleaved bytes.
+fn u8_from_raw(template: &DynamicImage, w: u32, h: u32, raw: Vec<u8>) -> DynamicImage {
+    match template {
+        DynamicImage::ImageLuma8(_) => {
+            DynamicImage::ImageLuma8(image::ImageBuffer::from_raw(w, h, raw).unwrap())
+        }
+        DynamicImage::ImageLumaA8(_) => {
+            DynamicImage::ImageLumaA8(image::ImageBuffer::from_raw(w, h, raw).unwrap())
+        }
+        DynamicImage::ImageRgb8(_) => {
+            DynamicImage::ImageRgb8(image::ImageBuffer::from_raw(w, h, raw).unwrap())
+        }
+        DynamicImage::ImageRgba8(_) => {
+            DynamicImage::ImageRgba8(image::ImageBuffer::from_raw(w, h, raw).unwrap())
+        }
+        _ => template.clone(),
+    }
+}
+
 /// Rank filter: sort pixels in a (size x size) window, return rank-th smallest.
-/// Works on L-mode images; RGB images are converted to L first.
+/// Operates per-channel on u8 images (L, LA, RGB, RGBA, CMYK as RGBA).
+/// Input is the pre-expanded image; output has (w - 2*half) x (h - 2*half) dimensions.
 pub fn rankfilter(handle: &ImageHandle, size: u32, rank: u32) -> ImageHandle {
+    let half = (size / 2) as i32;
+    if let Some((bytes, w, h, ch)) = u8_channels(&handle.inner) {
+        let w_i = w as i32;
+        let h_i = h as i32;
+        let out_w = (w_i - 2 * half).max(0) as u32;
+        let out_h = (h_i - 2 * half).max(0) as u32;
+        let mut out_buf = vec![0u8; (out_w * out_h) as usize * ch];
+        let stride = w as usize * ch;
+        let window = (size * size) as usize;
+        let mut vals: Vec<u8> = Vec::with_capacity(window);
+        for oy in 0..out_h as i32 {
+            for ox in 0..out_w as i32 {
+                let cx = ox + half;
+                let cy = oy + half;
+                for c in 0..ch {
+                    vals.clear();
+                    for dy in -half..=half {
+                        let py = (cy + dy).clamp(0, h_i - 1) as usize;
+                        for dx in -half..=half {
+                            let px = (cx + dx).clamp(0, w_i - 1) as usize;
+                            vals.push(bytes[py * stride + px * ch + c]);
+                        }
+                    }
+                    vals.sort_unstable();
+                    let idx = (rank as usize).min(vals.len().saturating_sub(1));
+                    let out_idx = (oy as usize * out_w as usize + ox as usize) * ch + c;
+                    out_buf[out_idx] = vals[idx];
+                }
+            }
+        }
+        let di = u8_from_raw(&handle.inner, out_w, out_h, out_buf);
+        return ImageHandle {
+            inner: di,
+            mode_override: handle.mode_override,
+            palette: handle.palette.clone(),
+            palette_mode: handle.palette_mode.clone(),
+        };
+    }
+    // Fallback for non-u8 variants (I, F, 16-bit): operate on Luma8.
     let img = handle.inner.to_luma8();
     let (w, h) = (img.width(), img.height());
-    let half = (size / 2) as i32;
-    // Input is an expanded image (w = orig_w + size, h = orig_h + size).
-    // Output covers input positions half..(w - half) x half..(h - half).
     let out_w = (w as i32 - 2 * half).max(0) as u32;
     let out_h = (h as i32 - 2 * half).max(0) as u32;
     let mut out = image::GrayImage::new(out_w, out_h);
     for oy in 0..out_h as i32 {
         for ox in 0..out_w as i32 {
-            let cx = ox + half; // center x in input
-            let cy = oy + half; // center y in input
+            let cx = ox + half;
+            let cy = oy + half;
             let mut vals: Vec<u8> = Vec::with_capacity((size * size) as usize);
             for dy in -half..=half {
                 for dx in -half..=half {
@@ -4256,24 +4757,67 @@ pub fn rankfilter(handle: &ImageHandle, size: u32, rank: u32) -> ImageHandle {
             out.put_pixel(ox as u32, oy as u32, image::Luma([vals[idx]]));
         }
     }
-    let di = image::DynamicImage::ImageLuma8(out);
     ImageHandle {
-        inner: di,
+        inner: DynamicImage::ImageLuma8(out),
         mode_override: handle.mode_override,
-        palette: None,
-        palette_mode: None,
+        palette: handle.palette.clone(),
+        palette_mode: handle.palette_mode.clone(),
     }
 }
 
-/// Mode filter: return most common pixel in a (size x size) window.
+/// Mode filter: for each pixel, find the most frequent value in its (size x size)
+/// neighborhood. If no value occurs more than twice, preserve the original pixel.
+/// Ties are broken by picking the lowest value. Operates per-channel on u8 images.
 pub fn modefilter(handle: &ImageHandle, size: u32) -> ImageHandle {
+    let half = (size / 2) as i32;
+    if let Some((bytes, w, h, ch)) = u8_channels(&handle.inner) {
+        let w_i = w as i32;
+        let h_i = h as i32;
+        let stride = w as usize * ch;
+        let mut out_buf = vec![0u8; bytes.len()];
+        for y in 0..h_i {
+            for x in 0..w_i {
+                for c in 0..ch {
+                    let orig = bytes[y as usize * stride + x as usize * ch + c];
+                    let mut counts = [0u16; 256];
+                    for dy in -half..=half {
+                        let py = (y + dy).clamp(0, h_i - 1) as usize;
+                        for dx in -half..=half {
+                            let px = (x + dx).clamp(0, w_i - 1) as usize;
+                            counts[bytes[py * stride + px * ch + c] as usize] += 1;
+                        }
+                    }
+                    let mut best_count = 0u16;
+                    let mut best_val = orig;
+                    for (v, &cnt) in counts.iter().enumerate() {
+                        if cnt > best_count {
+                            best_count = cnt;
+                            best_val = v as u8;
+                        }
+                    }
+                    // Pillow ignores values that occur only once or twice; if no value
+                    // exceeds two occurrences, the original pixel is preserved.
+                    let result = if best_count >= 3 { best_val } else { orig };
+                    out_buf[y as usize * stride + x as usize * ch + c] = result;
+                }
+            }
+        }
+        let di = u8_from_raw(&handle.inner, w, h, out_buf);
+        return ImageHandle {
+            inner: di,
+            mode_override: handle.mode_override,
+            palette: handle.palette.clone(),
+            palette_mode: handle.palette_mode.clone(),
+        };
+    }
+    // Fallback: non-u8 variants → degrade to Luma8.
     let img = handle.inner.to_luma8();
     let (w, h) = (img.width(), img.height());
-    let half = (size / 2) as i32;
     let mut out = image::GrayImage::new(w, h);
     for y in 0..h as i32 {
         for x in 0..w as i32 {
-            let mut counts = [0u32; 256];
+            let orig = img.get_pixel(x as u32, y as u32)[0];
+            let mut counts = [0u16; 256];
             for dy in -half..=half {
                 for dx in -half..=half {
                     let px = (x + dx).clamp(0, w as i32 - 1) as u32;
@@ -4281,20 +4825,23 @@ pub fn modefilter(handle: &ImageHandle, size: u32) -> ImageHandle {
                     counts[img.get_pixel(px, py)[0] as usize] += 1;
                 }
             }
-            let mode_val = counts
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, &c)| c)
-                .map(|(i, _)| i)
-                .unwrap_or(0) as u8;
-            out.put_pixel(x as u32, y as u32, image::Luma([mode_val]));
+            let mut best_count = 0u16;
+            let mut best_val = orig;
+            for (v, &c) in counts.iter().enumerate() {
+                if c > best_count {
+                    best_count = c;
+                    best_val = v as u8;
+                }
+            }
+            let result = if best_count >= 3 { best_val } else { orig };
+            out.put_pixel(x as u32, y as u32, image::Luma([result]));
         }
     }
     ImageHandle {
-        inner: image::DynamicImage::ImageLuma8(out),
+        inner: DynamicImage::ImageLuma8(out),
         mode_override: handle.mode_override,
-        palette: None,
-        palette_mode: None,
+        palette: handle.palette.clone(),
+        palette_mode: handle.palette_mode.clone(),
     }
 }
 
