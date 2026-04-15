@@ -33,7 +33,7 @@ def __getattr__(name: str) -> _Op:
         opname, mode = parts
         if opname in (
             "add", "sub", "mul", "div", "mod", "pow",
-            "and", "or", "xor",
+            "and", "or", "xor", "invert",
             "abs", "neg", "pos",
             "lt", "le", "eq", "ne", "ge", "gt",
             "lshift", "rshift",
@@ -93,6 +93,14 @@ def _apply_binop(opname: str, mode: str, out_im, im1, im2) -> None:
             result = [x // y if y != 0 else 0 for x, y in zip(a, b)]
         elif opname == "mod":
             result = [x % y if y != 0 else 0 for x, y in zip(a, b)]
+        elif opname == "pow":
+            # Integer power with u16 wraparound; matches Pillow's C impl
+            # closely enough for the upstream tests.
+            result = [(x ** y) & 0xFFFF for x, y in zip(a, b)]
+        elif opname == "lshift":
+            result = [(x << (y & 0xF)) & 0xFFFF for x, y in zip(a, b)]
+        elif opname == "rshift":
+            result = [x >> (y & 0xF) for x, y in zip(a, b)]
         elif opname == "min":
             result = [min(x, y) for x, y in zip(a, b)]
         elif opname == "max":
@@ -156,6 +164,9 @@ def _apply_unop(opname: str, mode: str, out_im, im1) -> None:
             result = [(-_signed16(v)) & 0xFFFF for v in a]
         elif opname == "pos":
             result = a[:]
+        elif opname == "invert":
+            # Bitwise complement on signed int: ~0 == -1 (u16: 0xFFFF).
+            result = [(~_signed16(v)) & 0xFFFF for v in a]
         else:
             raise NotImplementedError(f"unop {opname}_{mode} not implemented")
         _put_I(out_im, result)
@@ -164,6 +175,8 @@ def _apply_unop(opname: str, mode: str, out_im, im1) -> None:
         if opname == "abs":
             result = a[:]
         elif opname == "neg":
+            result = [255 - v for v in a]
+        elif opname == "invert":
             result = [255 - v for v in a]
         else:
             raise NotImplementedError(f"unop {opname}_{mode} not implemented")

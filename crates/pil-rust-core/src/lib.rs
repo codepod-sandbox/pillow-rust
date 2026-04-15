@@ -1332,6 +1332,16 @@ pub fn convert(handle: &ImageHandle, target_mode: &str) -> Result<ImageHandle> {
                         ImageBuffer::from_fn(w, h, |x, y| image::Luma([buf.get_pixel(x, y)[0]]));
                     DynamicImage::ImageLuma8(out)
                 }
+                // I / F / I;16* → L: Pillow clamps the signed int value to
+                // [0, 255] rather than scaling via bit-shift. Our storage is
+                // u16; reuse the same clamp so small values like 3 round-trip
+                // to 3 instead of collapsing to 0 via (v >> 8).
+                DynamicImage::ImageLuma16(buf) => {
+                    let out = ImageBuffer::from_fn(w, h, |x, y| {
+                        image::Luma([buf.get_pixel(x, y)[0].min(255) as u8])
+                    });
+                    DynamicImage::ImageLuma8(out)
+                }
                 _ => {
                     let rgba = handle.inner.to_rgba8();
                     let out = ImageBuffer::from_fn(w, h, |x, y| {
