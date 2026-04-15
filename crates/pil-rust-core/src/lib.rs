@@ -1483,42 +1483,27 @@ pub fn convert(handle: &ImageHandle, target_mode: &str) -> Result<ImageHandle> {
                     palette_mode: None,
                 });
             }
-            // I: 32-bit signed int, approximated as Luma16
-            if target_mode == "I" {
+            // 16-bit-storage modes (I / F / I;16*): convert to our Luma16
+            // backing store, preserving the full value range. When the source
+            // is already Luma16 we pass pixels through unchanged; otherwise
+            // we widen u8 luma to u16.
+            if matches!(
+                target_mode,
+                "I" | "F" | "I;16" | "I;16B" | "I;16L" | "I;16N"
+            ) {
                 let (w, h) = handle.inner.dimensions();
-                let luma = handle.inner.to_luma8();
-                let buf = ImageBuffer::from_fn(w, h, |x, y| {
-                    image::Luma([luma.get_pixel(x, y)[0] as u16])
-                });
-                return Ok(ImageHandle {
-                    inner: DynamicImage::ImageLuma16(buf),
-                    mode_override: Some("I"),
-                    palette: None,
-                    palette_mode: None,
-                });
-            }
-            // F: 32-bit float, approximated as Luma16
-            if target_mode == "F" {
-                let (w, h) = handle.inner.dimensions();
-                let luma = handle.inner.to_luma8();
-                let buf = ImageBuffer::from_fn(w, h, |x, y| {
-                    image::Luma([luma.get_pixel(x, y)[0] as u16])
-                });
-                return Ok(ImageHandle {
-                    inner: DynamicImage::ImageLuma16(buf),
-                    mode_override: Some("F"),
-                    palette: None,
-                    palette_mode: None,
-                });
-            }
-            // I;16 variants
-            if matches!(target_mode, "I;16" | "I;16B" | "I;16L" | "I;16N") {
-                let (w, h) = handle.inner.dimensions();
-                let luma = handle.inner.to_luma8();
-                let buf = ImageBuffer::from_fn(w, h, |x, y| {
-                    image::Luma([luma.get_pixel(x, y)[0] as u16])
-                });
+                let buf: ImageBuffer<Luma<u16>, Vec<u16>> = match &handle.inner {
+                    DynamicImage::ImageLuma16(src) => src.clone(),
+                    _ => {
+                        let luma = handle.inner.to_luma8();
+                        ImageBuffer::from_fn(w, h, |x, y| {
+                            image::Luma([luma.get_pixel(x, y)[0] as u16])
+                        })
+                    }
+                };
                 let m: &'static str = match target_mode {
+                    "I" => "I",
+                    "F" => "F",
                     "I;16" => "I;16",
                     "I;16B" => "I;16B",
                     "I;16L" => "I;16L",

@@ -602,7 +602,13 @@ impl ImagingCore {
                 .into_pyobject(py)?
                 .into_any()
                 .unbind(),
-            "I" | "F" | "I;16" | "I;16B" | "I;16L" | "I;16N" => {
+            "F" => {
+                // F-mode is stored as Luma16 internally; return as float so
+                // repr() produces e.g. "3.0" instead of "3".
+                let v = (px[0] as u32) | ((px[1] as u32) << 8);
+                (v as f64).into_pyobject(py)?.into_any().unbind()
+            }
+            "I" | "I;16" | "I;16B" | "I;16L" | "I;16N" => {
                 let v = (px[0] as u32) | ((px[1] as u32) << 8);
                 (v as i32).into_pyobject(py)?.into_any().unbind()
             }
