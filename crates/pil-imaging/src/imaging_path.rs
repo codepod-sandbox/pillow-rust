@@ -129,20 +129,33 @@ impl ImagingPath {
         Some((x0, y0, x1, y1))
     }
 
-    fn transform(&mut self, matrix: (f64, f64, f64, f64, f64, f64)) {
+    #[pyo3(signature = (matrix, wrap=None))]
+    fn transform(
+        &mut self,
+        matrix: (f64, f64, f64, f64, f64, f64),
+        wrap: Option<f64>,
+    ) {
         let (a, b, c, d, e, f) = matrix;
+        let wrap_mod = wrap.unwrap_or(0.0);
         for (x, y) in &mut self.coords {
-            let nx = a * *x + b * *y + c;
+            let mut nx = a * *x + b * *y + c;
             let ny = d * *x + e * *y + f;
+            if wrap_mod > 0.0 {
+                // Pillow wraps x coordinates modulo `wrap` (used for polygon
+                // fills that span the horizontal seam of a tiled canvas).
+                nx -= wrap_mod * (nx / wrap_mod).floor();
+            }
             *x = nx;
             *y = ny;
         }
     }
 
-    fn compact(&mut self, distance: f64) -> usize {
+    #[pyo3(signature = (distance=None))]
+    fn compact(&mut self, distance: Option<f64>) -> usize {
         if self.coords.is_empty() {
             return 0;
         }
+        let distance = distance.unwrap_or(0.0);
         let original_len = self.coords.len();
         let d2 = distance * distance;
         let mut result = vec![self.coords[0]];
@@ -150,7 +163,7 @@ impl ImagingPath {
             let (lx, ly) = *result.last().unwrap();
             let dx = x - lx;
             let dy = y - ly;
-            if dx * dx + dy * dy >= d2 {
+            if dx * dx + dy * dy > d2 {
                 result.push((x, y));
             }
         }
