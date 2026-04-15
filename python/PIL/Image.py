@@ -541,6 +541,9 @@ class Image:
         # ImageFile sets `tile = [(decoder, extents, offset, args), ...]`
         # during _open(); non-file images leave it empty.
         self.tile: list[Any] = []
+        # ImageFile populates this with the source path on open(); non-file
+        # images keep it as an empty string (matches upstream Pillow).
+        self.filename: str = ""
 
     @property
     def im(self) -> core.ImagingCore:

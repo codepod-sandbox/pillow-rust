@@ -482,12 +482,21 @@ impl ImagingCore {
     }
 
     #[pyo3(signature = (radius, n=None))]
-    fn box_blur(&self, radius: &Bound<'_, PyAny>, n: Option<i32>) -> ImagingCore {
-        let _ = n;
+    fn box_blur(&self, radius: &Bound<'_, PyAny>, n: Option<i32>) -> PyResult<ImagingCore> {
+        // Palette/bit-packed/32-bit-integer modes cannot be blurred via the
+        // per-channel u8 sliding-window implementation. Matches Pillow which
+        // raises ValueError here rather than returning meaningless pixel data.
+        let mode = pil_rust_core::mode(&self.handle);
+        if matches!(mode, "1" | "P" | "I" | "F" | "YCbCr") {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "image has wrong mode",
+            ));
+        }
         let r = extract_scalar_or_first_of_tuple(radius).unwrap_or(1.0);
-        let handle = pil_rust_core::filter(&self.handle, "box_blur", &[r])
+        let passes = n.unwrap_or(1).max(1) as f32;
+        let handle = pil_rust_core::filter(&self.handle, "box_blur", &[r, passes])
             .unwrap_or_else(|_| self.handle.clone());
-        ImagingCore { handle }
+        Ok(ImagingCore { handle })
     }
 
     fn unsharp_mask(&self, radius: f32, percent: i32, threshold: i32) -> ImagingCore {

@@ -1819,8 +1819,9 @@ pub fn filter(handle: &ImageHandle, name: &str, args: &[f32]) -> Result<ImageHan
             apply_rank_filter(&handle.inner, size, size * size - 1)
         }
         "box_blur" => {
-            let radius = args.first().copied().unwrap_or(1.0) as u32;
-            apply_box_blur(&handle.inner, radius)
+            let radius = args.first().copied().unwrap_or(1.0);
+            let passes = args.get(1).copied().unwrap_or(1.0) as u32;
+            apply_box_blur_f(&handle.inner, radius, passes.max(1))
         }
         _ => {
             return Err(PilError::InvalidOperation(format!(
@@ -2057,95 +2058,83 @@ fn apply_rank_filter(img: &image::DynamicImage, size: u32, rank: u32) -> image::
     image::DynamicImage::ImageRgba8(out)
 }
 
-fn apply_box_blur(img: &image::DynamicImage, radius: u32) -> image::DynamicImage {
-    if radius == 0 {
+/// Box blur with fractional radius and multi-pass support.
+/// Implements Pillow's algorithm: two-pass separable box filter where the
+/// edge samples of the window receive fractional weight equal to `radius -
+/// floor(radius)`. Repeating for `passes > 1` approximates a Gaussian blur.
+fn apply_box_blur_f(img: &image::DynamicImage, radius: f32, passes: u32) -> image::DynamicImage {
+    if radius <= 0.0 || passes == 0 {
         return img.clone();
     }
-    let size = 2 * radius + 1;
-    let half = radius as i32;
 
-    // Preserve L mode
-    if matches!(img, image::DynamicImage::ImageLuma8(_)) {
-        let gray = img.to_luma8();
-        let (w, h) = gray.dimensions();
-        let mut out = image::GrayImage::new(w, h);
-        let n = (size * size) as f32;
-        for y in 0..h {
-            for x in 0..w {
-                let mut sum = 0.0f32;
-                for ky in -half..=half {
-                    for kx in -half..=half {
-                        let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
-                        let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
-                        sum += gray.get_pixel(sx, sy)[0] as f32;
-                    }
-                }
-                out.put_pixel(x, y, image::Luma([(sum / n) as u8]));
-            }
-        }
-        return image::DynamicImage::ImageLuma8(out);
+    // Work on a generic u8 channel buffer; the caller converts modes as needed.
+    let (bytes, w, h, ch) = match u8_channels(img) {
+        Some(x) => x,
+        None => return img.clone(),
+    };
+    let mut src: Vec<u8> = bytes.to_vec();
+    let mut tmp = vec![0u8; src.len()];
+
+    for _ in 0..passes {
+        box_blur_1d(&src, &mut tmp, w as usize, h as usize, ch, radius, true);
+        box_blur_1d(&tmp, &mut src, w as usize, h as usize, ch, radius, false);
     }
 
-    // Preserve RGB mode
-    if matches!(img, image::DynamicImage::ImageRgb8(_)) {
-        let rgb = img.to_rgb8();
-        let (w, h) = rgb.dimensions();
-        let mut out = image::RgbImage::new(w, h);
-        let n = (size * size) as f32;
-        for y in 0..h {
-            for x in 0..w {
-                let mut r_sum = 0.0f32;
-                let mut g_sum = 0.0f32;
-                let mut b_sum = 0.0f32;
-                for ky in -half..=half {
-                    for kx in -half..=half {
-                        let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
-                        let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
-                        let p = rgb.get_pixel(sx, sy);
-                        r_sum += p[0] as f32;
-                        g_sum += p[1] as f32;
-                        b_sum += p[2] as f32;
-                    }
-                }
-                out.put_pixel(
-                    x,
-                    y,
-                    image::Rgb([(r_sum / n) as u8, (g_sum / n) as u8, (b_sum / n) as u8]),
-                );
-            }
-        }
-        return image::DynamicImage::ImageRgb8(out);
-    }
-
-    let rgba = img.to_rgba8();
-    let (w, h) = rgba.dimensions();
-    let mut out = image::RgbaImage::new(w, h);
-    let n = (size * size) as f32;
-    for y in 0..h {
-        for x in 0..w {
-            let mut r_sum = 0.0f32;
-            let mut g_sum = 0.0f32;
-            let mut b_sum = 0.0f32;
-            for ky in -half..=half {
-                for kx in -half..=half {
-                    let sx = (x as i32 + kx).clamp(0, w as i32 - 1) as u32;
-                    let sy = (y as i32 + ky).clamp(0, h as i32 - 1) as u32;
-                    let p = rgba.get_pixel(sx, sy);
-                    r_sum += p[0] as f32;
-                    g_sum += p[1] as f32;
-                    b_sum += p[2] as f32;
-                }
-            }
-            let a = rgba.get_pixel(x, y)[3];
-            out.put_pixel(
-                x,
-                y,
-                image::Rgba([(r_sum / n) as u8, (g_sum / n) as u8, (b_sum / n) as u8, a]),
-            );
-        }
-    }
-    image::DynamicImage::ImageRgba8(out)
+    u8_from_raw(img, w, h, src)
 }
+
+/// Single-dimension box blur pass over an interleaved u8 buffer.
+/// `horizontal=true` blurs along rows; false blurs along columns.
+fn box_blur_1d(
+    input: &[u8],
+    output: &mut [u8],
+    w: usize,
+    h: usize,
+    ch: usize,
+    radius: f32,
+    horizontal: bool,
+) {
+    let ir = radius.floor() as isize;
+    let fr = radius - ir as f32;
+    let edge_weight = fr;
+    let total_weight = (2 * ir as i32 + 1) as f32 + 2.0 * edge_weight;
+    let stride = w * ch;
+    let (outer_len, inner_len) = if horizontal { (h, w) } else { (w, h) };
+
+    for outer in 0..outer_len {
+        for c in 0..ch {
+            // Pre-compute a view into the 1D line (row or column) for channel c.
+            let get_px = |i: usize| -> u8 {
+                let (x, y) = if horizontal { (i, outer) } else { (outer, i) };
+                input[y * stride + x * ch + c]
+            };
+            let put_px = |o: &mut [u8], i: usize, v: u8| {
+                let (x, y) = if horizontal { (i, outer) } else { (outer, i) };
+                o[y * stride + x * ch + c] = v;
+            };
+
+            for i in 0..inner_len {
+                let mut sum: f32 = 0.0;
+                // Full-weight integer window
+                for d in -ir..=ir {
+                    let idx = (i as isize + d).clamp(0, (inner_len - 1) as isize) as usize;
+                    sum += get_px(idx) as f32;
+                }
+                // Edge samples (fractional weight on both sides)
+                if edge_weight > 0.0 {
+                    let left = (i as isize - ir - 1).clamp(0, (inner_len - 1) as isize) as usize;
+                    let right = (i as isize + ir + 1).clamp(0, (inner_len - 1) as isize) as usize;
+                    sum += edge_weight * (get_px(left) as f32 + get_px(right) as f32);
+                }
+                let v = (sum / total_weight + 0.5).clamp(0.0, 255.0) as u8;
+                put_px(output, i, v);
+            }
+        }
+    }
+}
+
+// (legacy integer box blur removed — apply_box_blur_f handles fractional
+// radii via a separable two-pass algorithm.)
 
 // ---------------------------------------------------------------------------
 // Drawing
