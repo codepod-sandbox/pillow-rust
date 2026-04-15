@@ -408,17 +408,54 @@ fn effect_noise(size: &Bound<'_, PyAny>, sigma: f64) -> PyResult<imaging_core::I
     Ok(imaging_core::ImagingCore { handle })
 }
 
-#[pyfunction]
-fn clear_cache() {}
+// Memory-pool tuning knobs. Pillow's C implementation keeps a free-list of
+// image blocks; the getters/setters expose the current values so applications
+// can tune them. We don't pool memory ourselves, so these store simple counters
+// purely for API compatibility.
+use std::sync::atomic::{AtomicI32, Ordering};
+static ALIGNMENT: AtomicI32 = AtomicI32::new(1);
+static BLOCK_SIZE: AtomicI32 = AtomicI32::new(16 * 1024 * 1024);
+static BLOCKS_MAX: AtomicI32 = AtomicI32::new(0);
 
 #[pyfunction]
-fn set_alignment(_n: i32) {}
+#[pyo3(signature = (_n=None))]
+fn clear_cache(_n: Option<i32>) -> i32 {
+    0
+}
 
 #[pyfunction]
-fn set_block_size(_n: i32) {}
+fn set_alignment(n: i32) {
+    ALIGNMENT.store(n, Ordering::Relaxed);
+}
 
 #[pyfunction]
-fn set_blocks_max(_n: i32) {}
+fn get_alignment() -> i32 {
+    ALIGNMENT.load(Ordering::Relaxed)
+}
+
+#[pyfunction]
+fn set_block_size(n: i32) {
+    BLOCK_SIZE.store(n, Ordering::Relaxed);
+}
+
+#[pyfunction]
+fn get_block_size() -> i32 {
+    BLOCK_SIZE.load(Ordering::Relaxed)
+}
+
+#[pyfunction]
+fn set_blocks_max(n: i32) {
+    BLOCKS_MAX.store(n, Ordering::Relaxed);
+}
+
+#[pyfunction]
+fn get_blocks_max() -> i32 {
+    BLOCKS_MAX.load(Ordering::Relaxed)
+}
+
+#[pyfunction]
+#[pyo3(signature = (_enable=None))]
+fn set_use_block_allocator(_enable: Option<bool>) {}
 
 #[pyfunction]
 fn get_stats() -> (i32, i32) {
@@ -485,8 +522,12 @@ fn _imaging(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(effect_noise, m)?)?;
     m.add_function(wrap_pyfunction!(clear_cache, m)?)?;
     m.add_function(wrap_pyfunction!(set_alignment, m)?)?;
+    m.add_function(wrap_pyfunction!(get_alignment, m)?)?;
     m.add_function(wrap_pyfunction!(set_block_size, m)?)?;
+    m.add_function(wrap_pyfunction!(get_block_size, m)?)?;
     m.add_function(wrap_pyfunction!(set_blocks_max, m)?)?;
+    m.add_function(wrap_pyfunction!(get_blocks_max, m)?)?;
+    m.add_function(wrap_pyfunction!(set_use_block_allocator, m)?)?;
     m.add_function(wrap_pyfunction!(get_stats, m)?)?;
     m.add_function(wrap_pyfunction!(reset_stats, m)?)?;
 
